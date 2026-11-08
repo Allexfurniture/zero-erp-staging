@@ -57,7 +57,7 @@ jobs:
           test "${existing[0]}" = "20261109000000_zero_erp_canonical_initial_schema.sql"
 
           if [ ! -f supabase/config.toml ]; then
-            printf 'project_id = "zero-erp-staging"\\n' > supabase/config.toml
+            printf 'project_id = "zero-erp-staging"\n' > supabase/config.toml
           fi
 
           supabase migration new canonical_zero_initial_erp_database_schema
