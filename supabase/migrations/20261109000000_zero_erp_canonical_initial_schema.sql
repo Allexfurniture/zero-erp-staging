@@ -1,72 +1,14 @@
 -- ZERO ERP canonical initial database schema (squashed migration)
--- Source branch: fix/database-v1-hardening
--- Built by replaying the ordered migration SQL files from this repository.
 -- Intended for a NEW, EMPTY dedicated ZERO ERP Supabase database only.
 -- Do not apply to an existing database or production without migration-history
 -- reconciliation and a schema diff. Does not include Supabase-managed auth/storage
 -- schemas or environment-specific secrets.
--- NOTE: 20261108074000_zero_erp_inventory_control_account_fix.sql has the same
--- Git blob SHA/content as 20261108073000_zero_erp_purchase_sales_posting.sql
--- and is intentionally not duplicated in this replay.
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261107143935_initial_database_schema.sql
--- ============================================================================
 
--- ZERO ERP V1 initial schema bootstrap.
--- Non-destructive: never drop shared Supabase schemas or existing data.
--- Apply only to the dedicated ZERO ERP project after verifying its app schema is empty.
 BEGIN;
 
--- ===== Replayed: 20261107135206_zero_erp_v1_schema.sql =====
--- ZERO ERP V1 schema migration
--- Generated from docs/database/initial-database-schema-v1.sql.
--- Columns-only baseline: constraints, indexes, RLS policies, triggers, RPCs,
--- and seed/provisioning logic are intentionally deferred to later migrations.
-
--- ZERO ERP Initial Database Schema V1
--- Column definitions only: 23 retained legacy tables. No organization_setup table.
--- RBAC is excluded: no roles, permissions, or role-permission tables are included.
--- Access model: no RBAC tables. All active organization members may perform business operations.
--- Only the organization creator (organizations.created_by) may manage organization-level system data and memberships.
--- created_by records the authenticated user who created each applicable row; it is audit metadata, not an ownership permission.
--- No primary keys, foreign keys, indexes, checks, policies, triggers, or functions are defined here.
--- Legacy table columns and data types are copied from the existing live database catalog.
--- Opening setup uses existing master and transaction tables; no separate setup or opening table is used.
-
-/*
- * ORGANIZATION LIFECYCLE AND PRE-ACTIVATION WORKFLOW (V1)
- * - New organizations start with status = 'configuring'.
- * - Supported lifecycle values: configuring, active, inactive.
- * - While configuring, users may create and maintain setup master data in
- *   contacts, units_of_measure, products, and accounts.
- * - While configuring, only the opening journal entry may be created in the
- *   accounting ledger. It remains Draft while the user edits opening balances.
- * - Receivable and payable opening amounts are lines in that same opening
- *   journal entry and must carry the relevant contacts.contact_id.
- * - Inventory opening quantities and unit costs are held only in the Setup
- *   Wizard's temporary client-side state before completion. They must not be
- *   written to inventory_transactions or inventory_balances before Complete.
- * - The Complete operation must validate the opening journal is balanced,
- *   validate contact/account mappings, and verify that the Inventory Asset
- *   amount in the opening journal equals the sum of product opening quantities
- *   multiplied by their unit costs. A zero inventory opening must be explicitly
- *   confirmed when the organization has no opening stock.
- * - On successful Complete, one atomic database transaction must post the
- *   opening journal, create all opening inventory_transactions, update
- *   inventory_balances, and set organizations.status = 'active'. If any step
- *   fails, the entire operation must roll back and the organization stays
- *   configuring.
- * - Before activation, normal operational documents (purchase, sales, returns,
- *   expenses, payments, and non-opening journal entries) must not be posted.
- * - Once active, opening entries cannot be created or changed. Corrections
- *   must use normal adjustment or reversal workflows. Inactive organizations
- *   cannot perform business write operations.
- * - Enforce these rules in database/RPC logic, not only in the UI. Lock the
- *   organization row during Complete to prevent concurrent or duplicate posting.
- * - No separate organization_setup table, setup-progress columns, or opening
- *   completion Boolean columns are used in this V1 design.
- */
+-- REPLAYED SOURCE: 20261107135206_zero_erp_v1_schema.sql
 
 CREATE TABLE public.organizations (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -83,9 +25,6 @@ CREATE TABLE public.organizations (
 
   updated_at timestamp with time zone NOT NULL DEFAULT now()
 );
-
--- organizations.email must be globally unique across all organizations.
--- The unique constraint/index will be added in the constraints phase.
 
 CREATE TABLE public.organization_users (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -116,33 +55,6 @@ CREATE TABLE public.accounts (
 
   updated_at timestamp with time zone NOT NULL DEFAULT now()
 );
-
-/*
- * APPROVED ACCOUNTS BUSINESS RULES (V1)
- * - Account codes are generated automatically by the system, per organization.
- * - Account code ranges: Asset 1000-1999; Liability 2000-2999;
- *   Equity 3000-3999; Income 4000-4999; Expense 5000-5999.
- * - Account codes must be unique within an organization and must not be reused
- *   after deletion. Enforce uniqueness and generation atomically in the
- *   constraints/business-logic phase.
- * - Account names must be unique within an organization. Enforce this in the
- *   constraints phase (case-insensitive uniqueness is recommended).
- * - Approved default Chart of Accounts:
- *   1100 Current Assets (Asset, Debit, parent/non-postable)
- *     1110 Cash in Hand (Asset, Debit)
- *     1120 Bank Account (Asset, Debit)
- *     1130 Accounts Receivable (Asset, Debit)
- *   2100 Current Liabilities (Liability, Credit, parent/non-postable)
- *     2110 Accounts Payable (Liability, Credit)
- *   3100 Owner's Capital (Equity, Credit)
- *   3200 Opening Balance Equity (Equity, Credit)
- *   4100 Sales Revenue (Income, Credit)
- *   4200 Other Income (Income, Credit)
- *   5100 Cost of Goods Sold (Expense, Debit)
- *   5200 General Expenses (Expense, Debit)
- * - These are approved default records; seed/initialization logic is separate
- *   from this columns-only schema file.
- */
 
 CREATE TABLE public.units_of_measure (
   id uuid NOT NULL,
@@ -203,65 +115,6 @@ CREATE TABLE public.expense_categories (
   updated_at timestamp with time zone NOT NULL
 );
 
-/*
- * APPROVED DEFAULT EXPENSE CATEGORIES
- * Seed these 12 categories for each new organization. Each is linked to
- * account code 5200 (General Expenses):
- * EXP001 Salary & Wages
- * EXP002 Office Rent
- * EXP003 Electricity Bill
- * EXP004 Water Bill
- * EXP005 Internet & Telephone
- * EXP006 Transportation
- * EXP007 Office Supplies
- * EXP008 Marketing & Advertising
- * EXP009 Repair & Maintenance
- * EXP010 Entertainment
- * EXP011 Bank Charges
- * EXP012 Miscellaneous Expenses
- *
- * These are organization-scoped seed records, not column DEFAULT values.
- * Seed/initialization logic is separate from this columns-only schema file.
- */
-
-/*
- * NUMBER SEQUENCE POLICY (V1)
- * All generated master codes and document numbers are allocated through
- * public.number_sequences, scoped by organization_id and document_type.
- * The target tables store the generated value in a consistently named
- * "code" column. Sequence allocation must be atomic and must never reuse
- * a previously issued number. The application/database logic that allocates
- * numbers is implemented separately from this columns-only schema.
- * Sequence-backed tables: accounts, contacts, products, expense_categories, expenses,
- * payments, purchase, sales, purchase_returns, sales_returns,
- * journal_entries, and inventory_transactions.
- */
-
-/*
- * APPROVED NUMBER SEQUENCE CONFIGURATION (V1)
- * Automatically provision these 12 system-managed sequences for every
- * organization. Users cannot add, edit, or delete these configurations.
- * The system alone advances next_number atomically; prefix and padding
- * are fixed by the system configuration.
- *
- * document_type              prefix  next_number  padding
- * accounts                   ACC     1            6
- * contacts                   CON     1            6
- * products                   PRD     1            6
- * expense_categories         CAT     1            6
- * expenses                   EXP     1            6
- * payments                   PAY     1            6
- * purchase                   PUR     1            6
- * sales                      INV     1            6
- * purchase_returns           PR      1            6
- * sales_returns              SR      1            6
- * journal_entries            JE      1            6
- * inventory_transactions     ITX     1            6
- *
- * Provisioning and atomic number-allocation logic are implemented separately
- * from this columns-only schema file.
- */
-
 CREATE TABLE public.number_sequences (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
@@ -303,26 +156,6 @@ CREATE TABLE public.journal_entries (
   updated_at timestamp with time zone NOT NULL
 );
 
-/*
- * APPROVED JOURNAL ENTRY WORKFLOW
- * Draft -> Confirmed -> Posted.
- * - The organization's single initial accounting entry uses entry_type =
- *   'opening_balance' and is editable only while its status is Draft and the
- *   organization is not active.
- * - That one opening journal includes cash, bank, contact-wise receivables,
- *   contact-wise payables, other opening account balances, and the Inventory
- *   Asset control-account amount. Receivable/payable lines use contact_id.
- * - The opening journal is the durable Draft record. Inventory opening input
- *   is not persisted to the inventory ledger until the Complete operation.
- * - On Complete, this journal is confirmed and posted as part of the same
- *   atomic operation that creates the opening inventory ledger rows.
- * - Only one opening_balance journal entry may exist per organization; enforce
- *   this with a unique partial index/constraint in the constraints phase.
- * confirmed_at and confirmed_by record the confirmation audit.
- * posted_at and posted_by record the ledger posting audit.
- * Posted entries are corrected through reversal entries, not direct edits.
- */
-
 CREATE TABLE public.account_transactions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
@@ -339,19 +172,6 @@ CREATE TABLE public.account_transactions (
   updated_at timestamp with time zone
 );
 
-/*
- * INVENTORY OPENING RULES (V1)
- * - Inventory opening uses transaction_type = 'opening' and direction = 'in'.
- * - Inventory opening input is temporary wizard data until the user selects
- *   Complete; do not insert draft rows into this immutable inventory ledger.
- * - During Complete, create one inventory_transactions row per product and
- *   reference all rows to the organization's opening journal entry using
- *   reference_type = 'journal_entry' and reference_id = journal_entries.id.
- * - Create these rows and update inventory_balances atomically with posting
- *   the opening journal and activating the organization.
- * - Do not add a status column to inventory_transactions. It stores posted,
- *   immutable inventory movements only; corrections use adjustment/reversal.
- */
 CREATE TABLE public.inventory_transactions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   organization_id uuid NOT NULL,
@@ -638,10 +458,7 @@ CREATE TABLE public.payment_allocations (
   updated_at timestamp with time zone NOT NULL DEFAULT now()
 );
 
--- ===== Replayed: 20261107140952_zero_erp_v1_integrity_foundation.sql =====
--- ZERO ERP V1 integrity foundation
--- Migration equivalent to the integrity foundation applied to zero-erp.
--- Adds primary/foreign keys, same-organization references, checks, unique indexes and safe defaults.
+-- REPLAYED SOURCE: 20261107140952_zero_erp_v1_integrity_foundation.sql
 
 DO $$ DECLARE t text; has_col boolean; BEGIN FOREACH t IN ARRAY ARRAY['organizations','organization_users','accounts','units_of_measure','contacts','products','expense_categories','number_sequences','journal_entries','account_transactions','inventory_transactions','inventory_balances','purchase','purchase_items','purchase_returns','purchase_return_items','sales','sales_items','sales_returns','sales_return_items','expenses','payments','payment_allocations'] LOOP EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id SET DEFAULT gen_random_uuid()',t); SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=t AND column_name='created_at') INTO has_col; IF has_col THEN EXECUTE format('ALTER TABLE public.%I ALTER COLUMN created_at SET DEFAULT now()',t); EXECUTE format('ALTER TABLE public.%I ALTER COLUMN created_at SET NOT NULL',t); END IF; SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=t AND column_name='updated_at') INTO has_col; IF has_col THEN EXECUTE format('ALTER TABLE public.%I ALTER COLUMN updated_at SET DEFAULT now()',t); EXECUTE format('ALTER TABLE public.%I ALTER COLUMN updated_at SET NOT NULL',t); END IF; END LOOP; END $$;
 ALTER TABLE public.account_transactions ADD CONSTRAINT account_transactions_pkey PRIMARY KEY (id);
@@ -803,9 +620,7 @@ CREATE UNIQUE INDEX sales_return_items_line_uidx ON public.sales_return_items US
 CREATE UNIQUE INDEX sales_returns_code_uidx ON public.sales_returns USING btree (organization_id, code) WHERE (code IS NOT NULL);
 CREATE UNIQUE INDEX units_name_ci_uidx ON public.units_of_measure USING btree (organization_id, lower(name));
 
--- ===== Replayed: 20261107141128_zero_erp_v1_rls_security.sql =====
--- ZERO ERP V1 row-level security and organization access policies
--- Active members may operate business records; creator controls organization and system setup.
+-- REPLAYED SOURCE: 20261107141128_zero_erp_v1_rls_security.sql
 
 CREATE OR REPLACE FUNCTION public.is_org_member(p_organization_id uuid)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = ''
@@ -862,8 +677,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 
--- ===== Replayed: 20261107141158_zero_erp_v1_private_security_helpers.sql =====
--- Move security-definer RLS helpers outside the exposed Data API schemas.
+-- REPLAYED SOURCE: 20261107141158_zero_erp_v1_private_security_helpers.sql
 
 CREATE SCHEMA IF NOT EXISTS private;
 REVOKE ALL ON SCHEMA private FROM PUBLIC, anon;
@@ -873,8 +687,7 @@ ALTER FUNCTION public.is_org_creator(uuid) SET SCHEMA private;
 GRANT EXECUTE ON FUNCTION private.is_org_member(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.is_org_creator(uuid) TO authenticated, service_role;
 
--- ===== Replayed: 20261107141326_zero_erp_v1_audit_and_sequences.sql =====
--- ZERO ERP V1 audit fields and atomic document numbering
+-- REPLAYED SOURCE: 20261107141326_zero_erp_v1_audit_and_sequences.sql
 
 CREATE OR REPLACE FUNCTION private.apply_audit_fields()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
@@ -926,8 +739,7 @@ REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.apply_audit_fields() TO authenticated, service_role;
 
--- ===== Replayed: 20261107141347_fix_document_number_overflow.sql =====
--- Prevent lpad truncation when a sequence number exceeds its configured padding.
+-- REPLAYED SOURCE: 20261107141347_fix_document_number_overflow.sql
 CREATE OR REPLACE FUNCTION public.next_document_number(p_organization_id uuid,p_document_type text)
 RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
 AS $$
@@ -951,8 +763,7 @@ $$;
 REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO authenticated, service_role;
 
--- ===== Replayed: 20261107141508_zero_erp_v1_fk_indexes_and_policy_tuning.sql =====
--- ZERO ERP V1 foreign-key index coverage and RLS policy tuning
+-- REPLAYED SOURCE: 20261107141508_zero_erp_v1_fk_indexes_and_policy_tuning.sql
 
 DO $$
 DECLARE r record; v_index_name text; v_columns text;
@@ -995,8 +806,7 @@ CREATE POLICY inventory_transactions_member_select ON public.inventory_transacti
 CREATE POLICY inventory_transactions_member_insert ON public.inventory_transactions
  FOR INSERT TO authenticated WITH CHECK (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 
--- ===== Replayed: 20261107141553_harden_audit_metadata.sql =====
--- Prevent client spoofing of audit columns and cross-organization row moves.
+-- REPLAYED SOURCE: 20261107141553_harden_audit_metadata.sql
 CREATE OR REPLACE FUNCTION private.apply_audit_fields()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -1026,8 +836,7 @@ DROP TRIGGER IF EXISTS inventory_transactions_audit_fields ON public.inventory_t
 CREATE TRIGGER inventory_transactions_audit_fields BEFORE INSERT ON public.inventory_transactions
  FOR EACH ROW EXECUTE FUNCTION private.apply_audit_fields();
 
--- ===== Replayed: 20261107141702_zero_erp_v1_workflow_guardrails.sql =====
--- Draft-only document editing and controlled workflow transitions.
+-- REPLAYED SOURCE: 20261107141702_zero_erp_v1_workflow_guardrails.sql
 
 CREATE OR REPLACE FUNCTION private.enforce_draft_document()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
@@ -1119,8 +928,7 @@ DROP POLICY inventory_balances_member_all ON public.inventory_balances;
 CREATE POLICY inventory_balances_member_select ON public.inventory_balances
  FOR SELECT TO authenticated USING (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 
--- ===== Replayed: 20261107141715_fix_line_guard_parent_move.sql =====
--- Ensure a draft line cannot be moved away from a non-draft parent document.
+-- REPLAYED SOURCE: 20261107141715_fix_line_guard_parent_move.sql
 CREATE OR REPLACE FUNCTION private.enforce_draft_line()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -1150,8 +958,7 @@ BEGIN
 END;
 $$;
 
--- ===== Replayed: 20261107141727_fix_line_guard_opening_move.sql =====
--- Also enforce the opening-journal configuring-state rule on the old parent when a line is moved.
+-- REPLAYED SOURCE: 20261107141727_fix_line_guard_opening_move.sql
 CREATE OR REPLACE FUNCTION private.enforce_draft_line()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -1187,16 +994,13 @@ BEGIN
 END;
 $$;
 
--- ===== Replayed: 20261107142619_zero_erp_v1_accounting_defaults_and_sequences.sql =====
--- ZERO ERP V1 accounting defaults and immutable sequence configuration.
+-- REPLAYED SOURCE: 20261107142619_zero_erp_v1_accounting_defaults_and_sequences.sql
 
 alter table public.number_sequences
   add column increment_by bigint not null default 1;
 alter table public.number_sequences
   add constraint number_sequences_increment_positive check (increment_by > 0);
 
--- Number sequence configuration is system-managed. Members may read it;
--- only SECURITY DEFINER workflows may create/configure/advance sequences.
 drop policy if exists number_sequences_creator_delete on public.number_sequences;
 drop policy if exists number_sequences_creator_insert on public.number_sequences;
 drop policy if exists number_sequences_creator_update on public.number_sequences;
@@ -1250,8 +1054,6 @@ insert into private.default_expense_category_templates(code, name) values
 revoke all on private.default_account_templates from public, anon, authenticated;
 revoke all on private.default_expense_category_templates from public, anon, authenticated;
 
--- Seed all standard accounts, expense categories, and fixed system sequences
--- for a newly-created organization. Called only from trusted provisioning RPCs.
 create or replace function private.seed_organization_configuration(p_organization_id uuid)
 returns void
 language plpgsql
@@ -1314,7 +1116,6 @@ revoke all on function private.seed_organization_configuration(uuid) from public
 grant usage on schema private to service_role;
 grant execute on function private.seed_organization_configuration(uuid) to service_role;
 
--- Account codes are numeric, type-scoped, and constrained to their approved range.
 create or replace function public.next_account_code(
   p_organization_id uuid,
   p_account_type text
@@ -1347,8 +1148,6 @@ $function$;
 revoke all on function public.next_account_code(uuid,text) from public, anon;
 grant execute on function public.next_account_code(uuid,text) to authenticated, service_role;
 
--- Honor increment_by for all sequences and stop account-code allocation at
--- the upper bound of the approved account-type range.
 create or replace function public.next_document_number(
   p_organization_id uuid,
   p_document_type text
@@ -1407,8 +1206,7 @@ begin
 end;
 $function$;
 
--- ===== Replayed: 20261107143146_fix_expense_category_sequence_continuity.sql =====
--- Correct expense-category numbering: one continuous EXP sequence.
+-- REPLAYED SOURCE: 20261107143146_fix_expense_category_sequence_continuity.sql
 
 create or replace function private.allocate_document_number(
   p_organization_id uuid,
@@ -1516,10 +1314,7 @@ $function$;
 comment on column public.number_sequences.document_type is
   'Organization-scoped sequence key. expense_categories uses EXP001..., expenses uses EXP000001...';
 
--- ===== Replayed: 20261107143455_standardize_all_sequence_rules.sql =====
--- Standardize all ZERO ERP sequences on the same counter rule.
--- Every sequence uses the same allocator, advances by one, and applies its
--- configured prefix and padding. Only sequence configuration differs.
+-- REPLAYED SOURCE: 20261107143455_standardize_all_sequence_rules.sql
 
 create or replace function private.seed_organization_configuration(p_organization_id uuid)
 returns void
@@ -1588,7 +1383,6 @@ alter table public.number_sequences
 comment on column public.number_sequences.increment_by is
   'Standardized sequence rule: always 1. Each document_type has its own counter; prefix and padding are configurable.';
 
--- Production hardening: secure Data API grants and future object defaults.
 REVOKE ALL ON SCHEMA public FROM PUBLIC, anon;
 GRANT USAGE ON SCHEMA public TO authenticated, service_role;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC, anon, authenticated;
@@ -1615,7 +1409,6 @@ GRANT EXECUTE ON FUNCTION private.is_org_creator(uuid) TO authenticated, service
 GRANT EXECUTE ON FUNCTION private.allocate_document_number(uuid,text) TO service_role;
 GRANT EXECUTE ON FUNCTION private.seed_organization_configuration(uuid) TO service_role;
 
--- Seed account parents before children so the hierarchy is fully linked.
 CREATE OR REPLACE FUNCTION private.seed_organization_configuration(p_organization_id uuid)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
 AS $function$
@@ -1670,7 +1463,6 @@ BEGIN
 END;
 $function$;
 
--- Atomic bootstrap of organization, creator membership, COA, categories and sequences.
 CREATE OR REPLACE FUNCTION public.create_organization(
   p_name text, p_phone text DEFAULT NULL, p_email text DEFAULT NULL,
   p_address text DEFAULT NULL, p_tin text DEFAULT NULL, p_bin text DEFAULT NULL
@@ -1703,27 +1495,17 @@ $function$;
 REVOKE ALL ON FUNCTION public.create_organization(text,text,text,text,text,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.create_organization(text,text,text,text,text,text) TO authenticated, service_role;
 
--- Production catalog index for the self-referencing template foreign key.
 CREATE INDEX IF NOT EXISTS default_account_templates_parent_code_idx
   ON private.default_account_templates(parent_code)
   WHERE parent_code IS NOT NULL;
 
--- Organizations must be provisioned only through create_organization(), which
--- atomically creates the creator membership, COA, categories and sequences.
--- Organization deletion is intentionally unavailable to application users;
--- use inactive status and a separately controlled retention/purge procedure.
 DROP POLICY IF EXISTS organizations_insert_creator ON public.organizations;
 DROP POLICY IF EXISTS organizations_delete_creator ON public.organizations;
 
--- Private seed catalogs are internal-only. RLS is enabled as defense in depth;
--- no client policies are defined, and SECURITY DEFINER seed functions execute
--- as the owning postgres role.
 ALTER TABLE private.default_account_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.default_expense_category_templates ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON ALL TABLES IN SCHEMA private FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA private FROM PUBLIC, anon, authenticated;
-
--- ===== Production lifecycle, draft integrity, and controlled ledger writes =====
 
 CREATE OR REPLACE FUNCTION private.enforce_master_data_write()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
@@ -1923,8 +1705,6 @@ BEGIN
   RETURN private.allocate_document_number(p_organization_id,p_document_type);
 END;
 $function$;
-
--- ===== Accounting constraints and atomic Setup Wizard completion =====
 
 DO $function$
 BEGIN
@@ -2144,8 +1924,6 @@ $function$;
 REVOKE ALL ON FUNCTION public.complete_organization_setup(uuid,jsonb,boolean) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.complete_organization_setup(uuid,jsonb,boolean) TO authenticated,service_role;
 
--- ===== Controlled journal posting and reversal RPCs =====
-
 CREATE UNIQUE INDEX IF NOT EXISTS journal_entries_one_reversal_uidx
   ON public.journal_entries(organization_id,reversal_of_id)
   WHERE reversal_of_id IS NOT NULL;
@@ -2338,8 +2116,6 @@ GRANT EXECUTE ON FUNCTION public.post_journal_entry(uuid,uuid) TO authenticated,
 REVOKE ALL ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO authenticated,service_role;
 
--- ===== Expense posting workflow =====
-
 CREATE OR REPLACE FUNCTION public.post_expense(
   p_organization_id uuid,
   p_expense_id uuid
@@ -2446,14 +2222,8 @@ GRANT EXECUTE ON FUNCTION public.post_expense(uuid,uuid) TO authenticated,servic
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108071500_zero_erp_sequence_rpc_hardening.sql
--- ============================================================================
 
--- ZERO ERP V1: close direct sequence-consumption RPC.
--- Document numbers are allocated inside trusted posting/setup workflows.
--- Account code allocation remains available through next_account_code(), which
--- validates organization creator authority through next_document_number().
 BEGIN;
 
 REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon, authenticated;
@@ -2461,11 +2231,8 @@ GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO service_role
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108072000_zero_erp_tenant_scope_and_ownership.sql
--- ============================================================================
 
--- ZERO ERP V1: explicit organization ownership and immutable tenant scope.
 BEGIN;
 
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS owner_user_id uuid;
@@ -2632,11 +2399,8 @@ REVOKE ALL ON FUNCTION private.enforce_organization_owner_immutable() FROM PUBLI
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108073000_zero_erp_purchase_sales_posting.sql
--- ============================================================================
 
--- ZERO ERP V1: atomic purchase and sales posting workflows.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION private.purchase_net_lines(p_organization_id uuid,p_purchase_id uuid)
@@ -3192,11 +2956,8 @@ GRANT EXECUTE ON FUNCTION public.post_sales(uuid,uuid) TO authenticated,service_
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108075000_zero_erp_source_document_reversal_guard.sql
--- ============================================================================
 
--- ZERO ERP V1: prevent generic journal reversal from bypassing source-document ledgers.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION public.reverse_journal_entry(
@@ -3287,11 +3048,8 @@ GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO a
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108080000_zero_erp_precision_and_discount_allocation.sql
--- ============================================================================
 
--- ZERO ERP V1: align opening inventory precision and exact document discount allocation.
 BEGIN;
 CREATE OR REPLACE FUNCTION public.complete_organization_setup(
   p_organization_id uuid,
@@ -3525,14 +3283,8 @@ REVOKE ALL ON FUNCTION private.sales_net_lines(uuid,uuid) FROM PUBLIC,anon,authe
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108082000_zero_erp_return_posting.sql
--- ============================================================================
 
--- ZERO ERP V1: atomic purchase-return and sales-return workflows.
--- Purchase returns relieve stock at current moving-average cost; variance is
--- posted to the configured expense account. Sales returns restore stock at the
--- original sale COGS and reverse the source sale's net revenue.
 BEGIN;
 
 CREATE UNIQUE INDEX IF NOT EXISTS purchase_return_items_one_source_line_uidx
@@ -4119,11 +3871,8 @@ GRANT EXECUTE ON FUNCTION public.post_sales_return(uuid,uuid) TO authenticated,s
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108083000_zero_erp_master_data_immutability.sql
--- ============================================================================
 
--- ZERO ERP V1: freeze accounting and product master-data mappings after ledger use.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION private.enforce_product_identity_immutable()
@@ -4204,14 +3953,8 @@ REVOKE ALL ON FUNCTION private.enforce_used_account_definition_immutable() FROM 
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108084000_zero_erp_inventory_adjustments.sql
--- ============================================================================
 
--- ZERO ERP V1: controlled inventory increase/decrease adjustments.
--- The journal entry is the durable adjustment header; inventory ledger rows
--- reference that journal. Increases credit a configured income account and
--- decreases debit a configured expense account.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION public.post_inventory_adjustment(
@@ -4447,14 +4190,8 @@ GRANT EXECUTE ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108090000_zero_erp_payment_posting.sql
--- ============================================================================
 
--- ZERO ERP V1: validated customer receipts and supplier payments.
--- payment_type values are exactly 'receipt' (customer funds received) and
--- 'payment' (supplier funds paid). Allocations are validated against posted
--- source invoices and serialized by locking the invoice row.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION public.post_payment(p_organization_id uuid,p_payment_id uuid)
@@ -4639,11 +4376,8 @@ GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108091000_zero_erp_payment_constraints.sql
--- ============================================================================
 
--- Constrain payment vocabulary and allocation identity.
 BEGIN;
 ALTER TABLE public.payments
   ADD CONSTRAINT payments_payment_type_check CHECK (payment_type IN ('receipt','payment'));
@@ -4653,11 +4387,8 @@ CREATE UNIQUE INDEX payment_allocations_one_invoice_per_payment_uidx
   ON public.payment_allocations(organization_id,payment_id,document_type,document_id);
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108092000_zero_erp_opening_balance_subledger.sql
--- ============================================================================
 
--- ZERO ERP V1: opening receivable/payable subledger and payment allocation.
 BEGIN;
 
 CREATE TABLE public.opening_balance_items (
@@ -4925,19 +4656,13 @@ GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108093000_zero_erp_opening_balance_index.sql
--- ============================================================================
 
--- Cover the opening balance subledger account foreign key for joins/deletes.
 CREATE INDEX IF NOT EXISTS opening_balance_items_account_idx
   ON public.opening_balance_items(organization_id,account_id);
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108094000_zero_erp_control_account_contact_rules.sql
--- ============================================================================
 
--- ZERO ERP V1: explicit contact-control account semantics.
 BEGIN;
 
 ALTER TABLE public.accounts
@@ -5219,11 +4944,8 @@ $function$;
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108095000_zero_erp_account_document_immutability.sql
--- ============================================================================
 
--- Keep account posting semantics immutable once any source document references the account.
 CREATE OR REPLACE FUNCTION private.enforce_used_account_definition_immutable()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -5271,9 +4993,7 @@ BEGIN
 END;
 $function$;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108096000_zero_erp_account_contact_guard_trigger.sql
--- ============================================================================
 
 DROP TRIGGER IF EXISTS accounts_used_definition_immutable ON public.accounts;
 CREATE TRIGGER accounts_used_definition_immutable
@@ -5281,11 +5001,8 @@ BEFORE UPDATE OF code,account_type,normal_balance,is_control_account,is_postable
 ON public.accounts
 FOR EACH ROW EXECUTE FUNCTION private.enforce_used_account_definition_immutable();
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108097000_zero_erp_payment_expense_reversals.sql
--- ============================================================================
 
--- ZERO ERP V1: source-aware reversals for payments and expenses.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION private.reverse_source_journal(
@@ -5460,12 +5177,8 @@ GRANT EXECUTE ON FUNCTION public.reverse_expense(uuid,uuid,date,text) TO authent
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108098000_zero_erp_return_reversals_and_rpc_grants.sql
--- ============================================================================
 
--- ZERO ERP V1: source-aware purchase-return and sales-return reversals.
--- Source-document reversal updates both accounting and inventory atomically.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION public.reverse_purchase_return(
@@ -5675,15 +5388,9 @@ GRANT EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) TO au
 
 COMMIT;
 
--- ============================================================================
 -- SOURCE MIGRATION: 20261108098100_zero_erp_secure_rpc_facade.sql
--- ============================================================================
 
--- ZERO ERP V1: move privileged workflow implementations behind invoker RPC facades.
 BEGIN;
--- Move privileged workflow implementations out of the exposed API schema.
--- Public RPC names remain as SECURITY INVOKER facades; the private implementations
--- retain explicit auth.uid()/organization-membership checks.
 GRANT USAGE ON SCHEMA private TO authenticated;
 REVOKE USAGE ON SCHEMA private FROM anon;
 
@@ -5753,9 +5460,6 @@ END;
 $verify_facade$;
 COMMIT;
 
--- Recovered return-source integrity rules from the historical
--- zero_erp_return_source_integrity migration record.
--- A return line must match both its source document and source product.
 BEGIN;
 
 CREATE OR REPLACE FUNCTION private.enforce_purchase_return_source_integrity()
