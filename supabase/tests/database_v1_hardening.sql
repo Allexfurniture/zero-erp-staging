@@ -119,8 +119,8 @@ BEGIN
     RAISE EXCEPTION 'Organization setup completion failed';
   END IF;
 
-  INSERT INTO public.contacts(id,organization_id,name,status,created_by)
-  VALUES(v_contact,v_org,'Tenant scope test','active',v_user);
+  INSERT INTO public.contacts(id,organization_id,code,name,status,created_by)
+  VALUES(v_contact,v_org,private.allocate_document_number(v_org,'contacts'),'Tenant scope test','active',v_user);
 
   BEGIN
     UPDATE public.contacts SET organization_id=v_second_org WHERE id=v_contact;
