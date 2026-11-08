@@ -2198,6 +2198,8 @@ DECLARE
   v_debit numeric(20,4);
   v_credit numeric(20,4);
   v_invalid bigint;
+  v_item_count bigint;
+  v_distinct_products bigint;
 BEGIN
   IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
     RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
@@ -4309,11 +4311,11 @@ BEGIN
               OR x.quantity IS NULL OR x.quantity<=0
               OR (x.direction='in' AND (x.unit_cost IS NULL OR x.unit_cost<=0))
          )
-    INTO v_invalid,v_line_no,v_has_in
+    INTO v_item_count,v_distinct_products,v_invalid
     FROM jsonb_to_recordset(p_items) AS x(
       product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
     );
-  IF v_invalid<>v_line_no OR v_has_in>0 THEN
+  IF v_item_count<>v_distinct_products OR v_invalid>0 THEN
     RAISE EXCEPTION 'Adjustment items require unique products, direction in/out, positive quantity and positive unit cost for increases' USING ERRCODE='23514';
   END IF;
 
