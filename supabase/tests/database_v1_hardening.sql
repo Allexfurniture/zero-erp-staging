@@ -18,8 +18,10 @@ BEGIN
   END IF;
 
   IF to_regprocedure('public.post_purchase(uuid,uuid)') IS NULL
-     OR to_regprocedure('public.post_sales(uuid,uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Purchase and sales posting RPCs must be installed';
+     OR to_regprocedure('public.post_sales(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.post_purchase_return(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.post_sales_return(uuid,uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Purchase, sales and return posting RPCs must be installed';
   END IF;
 
   SELECT pg_get_functiondef('private.purchase_net_lines(uuid,uuid)'::regprocedure) INTO v_def;
@@ -309,6 +311,56 @@ BEGIN
   IF v_cogs_total<>36 THEN
     RAISE EXCEPTION 'Sales COGS incorrect: %',v_cogs_total;
   END IF;
+
+  -- A purchase return uses current moving-average inventory cost and reconciles
+  -- the supplier credit through the configured purchase-return variance account.
+  DECLARE
+    v_purchase_return uuid:=gen_random_uuid();
+    v_sales_return uuid:=gen_random_uuid();
+    v_purchase_item uuid;
+    v_sales_item uuid;
+    v_return_journal uuid;
+  BEGIN
+    SELECT id INTO v_purchase_item FROM public.purchase_items WHERE organization_id=v_org AND purchase_id=v_purchase;
+    INSERT INTO public.purchase_returns(
+      id,organization_id,purchase_id,supplier_id,return_date,status,subtotal,discount_amount,total_amount,
+      payable_account_id,created_by
+    )
+    VALUES(v_purchase_return,v_org,v_purchase,v_supplier,current_date,'draft',20,2,18,v_payable,v_user);
+    INSERT INTO public.purchase_return_items(
+      organization_id,purchase_return_id,line_number,purchase_item_id,product_id,quantity,unit_cost,line_total,created_by
+    )
+    VALUES(v_org,v_purchase_return,1,v_purchase_item,v_product,2,10,20,v_user);
+    v_return_journal:=public.post_purchase_return(v_org,v_purchase_return);
+    IF NOT EXISTS(SELECT 1 FROM public.purchase_returns WHERE id=v_purchase_return AND status='posted' AND posted_journal_entry_id=v_return_journal) THEN
+      RAISE EXCEPTION 'Purchase return posting did not finalize source document';
+    END IF;
+    SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances WHERE organization_id=v_org AND product_id=v_product;
+    IF v_qty<>4 OR v_value<>36 THEN
+      RAISE EXCEPTION 'Purchase return inventory balance incorrect: quantity %, value %',v_qty,v_value;
+    END IF;
+
+    SELECT id INTO v_sales_item FROM public.sales_items WHERE organization_id=v_org AND sales_id=v_sale;
+    INSERT INTO public.sales_returns(
+      id,organization_id,sales_id,customer_id,return_date,status,subtotal,discount_amount,total_amount,
+      receivable_account_id,created_by
+    )
+    VALUES(v_sales_return,v_org,v_sale,v_customer,current_date,'draft',20,0,20,v_receivable,v_user);
+    INSERT INTO public.sales_return_items(
+      organization_id,sales_return_id,line_number,sales_item_id,product_id,quantity,unit_price,line_total,created_by
+    )
+    VALUES(v_org,v_sales_return,1,v_sales_item,v_product,1,20,20,v_user);
+    v_return_journal:=public.post_sales_return(v_org,v_sales_return);
+    IF NOT EXISTS(SELECT 1 FROM public.sales_returns WHERE id=v_sales_return AND status='posted' AND posted_journal_entry_id=v_return_journal) THEN
+      RAISE EXCEPTION 'Sales return posting did not finalize source document';
+    END IF;
+    SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances WHERE organization_id=v_org AND product_id=v_product;
+    IF v_qty<>5 OR v_value<>45 THEN
+      RAISE EXCEPTION 'Sales return inventory balance incorrect: quantity %, value %',v_qty,v_value;
+    END IF;
+    SELECT cogs_total INTO v_cogs_total FROM public.sales_return_items WHERE organization_id=v_org AND sales_return_id=v_sales_return;
+    IF v_cogs_total<>9 THEN RAISE EXCEPTION 'Sales return COGS restoration incorrect: %',v_cogs_total; END IF;
+  END;
 
   INSERT INTO public.sales(id,organization_id,customer_id,invoice_date,status,subtotal,discount_amount,total_amount,receivable_account_id,created_by)
   VALUES(v_overstock_sale,v_org,v_customer,current_date,'draft',1000,0,1000,v_receivable,v_user);
