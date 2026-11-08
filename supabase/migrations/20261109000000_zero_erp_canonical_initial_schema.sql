@@ -4154,3 +4154,524 @@ REVOKE ALL ON FUNCTION public.post_sales_return(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_sales_return(uuid,uuid) TO authenticated,service_role;
 
 COMMIT;
+
+
+-- ============================================================================
+-- SOURCE MIGRATION: 20261108083000_zero_erp_master_data_immutability.sql
+-- ============================================================================
+
+-- ZERO ERP V1: freeze accounting and product master-data mappings after ledger use.
+BEGIN;
+
+CREATE OR REPLACE FUNCTION private.enforce_product_identity_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $function$
+BEGIN
+  IF (
+       NEW.code IS DISTINCT FROM OLD.code
+       OR NEW.unit_id IS DISTINCT FROM OLD.unit_id
+       OR NEW.inventory_account_id IS DISTINCT FROM OLD.inventory_account_id
+       OR NEW.sales_account_id IS DISTINCT FROM OLD.sales_account_id
+       OR NEW.cogs_account_id IS DISTINCT FROM OLD.cogs_account_id
+     )
+     AND EXISTS (
+       SELECT 1 FROM public.inventory_transactions t
+        WHERE t.organization_id=OLD.organization_id AND t.product_id=OLD.id
+     ) THEN
+    RAISE EXCEPTION 'Product code, unit and account mappings are immutable after inventory ledger activity'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION private.enforce_used_account_definition_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = ''
+AS $function$
+DECLARE
+  v_used boolean;
+BEGIN
+  v_used :=
+    EXISTS (
+      SELECT 1 FROM public.account_transactions t
+       WHERE t.organization_id=OLD.organization_id AND t.account_id=OLD.id
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.products p
+       WHERE p.organization_id=OLD.organization_id
+         AND OLD.id IN (p.inventory_account_id,p.sales_account_id,p.cogs_account_id)
+    )
+    OR EXISTS (
+      SELECT 1 FROM public.expense_categories c
+       WHERE c.organization_id=OLD.organization_id AND c.expense_account_id=OLD.id
+    );
+
+  IF v_used AND (
+       NEW.code IS DISTINCT FROM OLD.code
+       OR NEW.account_type IS DISTINCT FROM OLD.account_type
+       OR NEW.normal_balance IS DISTINCT FROM OLD.normal_balance
+       OR NEW.is_control_account IS DISTINCT FROM OLD.is_control_account
+       OR NEW.is_postable IS DISTINCT FROM OLD.is_postable
+     ) THEN
+    RAISE EXCEPTION 'Account code and posting definition are immutable after ledger or master-data use'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS products_identity_immutable ON public.products;
+CREATE TRIGGER products_identity_immutable
+BEFORE UPDATE OF code,unit_id,inventory_account_id,sales_account_id,cogs_account_id
+ON public.products
+FOR EACH ROW EXECUTE FUNCTION private.enforce_product_identity_immutable();
+
+DROP TRIGGER IF EXISTS accounts_used_definition_immutable ON public.accounts;
+CREATE TRIGGER accounts_used_definition_immutable
+BEFORE UPDATE OF code,account_type,normal_balance,is_control_account,is_postable
+ON public.accounts
+FOR EACH ROW EXECUTE FUNCTION private.enforce_used_account_definition_immutable();
+
+REVOKE ALL ON FUNCTION private.enforce_product_identity_immutable() FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION private.enforce_used_account_definition_immutable() FROM PUBLIC,anon,authenticated;
+
+COMMIT;
+
+
+-- ============================================================================
+-- SOURCE MIGRATION: 20261108084000_zero_erp_inventory_adjustments.sql
+-- ============================================================================
+
+-- ZERO ERP V1: controlled inventory increase/decrease adjustments.
+-- The journal entry is the durable adjustment header; inventory ledger rows
+-- reference that journal. Increases credit a configured income account and
+-- decreases debit a configured expense account.
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.post_inventory_adjustment(
+  p_organization_id uuid,
+  p_adjustment_date date,
+  p_reason text,
+  p_items jsonb,
+  p_gain_account_id uuid DEFAULT NULL,
+  p_loss_account_id uuid DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $function$
+DECLARE
+  v_user_id uuid:=auth.uid();
+  v_org_status text;
+  v_item record;
+  v_balance public.inventory_balances%ROWTYPE;
+  v_has_balance boolean;
+  v_inventory_account_id uuid;
+  v_account_type text;
+  v_journal_id uuid:=gen_random_uuid();
+  v_line_no integer:=0;
+  v_new_qty numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_total_value numeric(20,4);
+  v_unit_cost numeric(20,6);
+  v_direction text;
+  v_quantity numeric(20,6);
+  v_unit_cost_input numeric(20,6);
+  v_has_in boolean;
+  v_has_out boolean;
+  v_invalid bigint;
+BEGIN
+  IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
+    RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
+  END IF;
+  IF p_adjustment_date IS NULL OR p_reason IS NULL OR btrim(p_reason)='' OR length(btrim(p_reason))>500 THEN
+    RAISE EXCEPTION 'An adjustment date and reason of 1-500 characters are required' USING ERRCODE='22023';
+  END IF;
+  IF p_items IS NULL OR jsonb_typeof(p_items) IS DISTINCT FROM 'array' OR jsonb_array_length(p_items)=0 THEN
+    RAISE EXCEPTION 'Inventory adjustment requires a non-empty JSON array' USING ERRCODE='22023';
+  END IF;
+
+  SELECT o.status INTO v_org_status
+    FROM public.organizations o WHERE o.id=p_organization_id FOR UPDATE;
+  IF v_org_status IS DISTINCT FROM 'active' THEN
+    RAISE EXCEPTION 'Inventory adjustments require an active organization' USING ERRCODE='23514';
+  END IF;
+
+  SELECT count(*),count(DISTINCT x.product_id),
+         count(*) FILTER (
+           WHERE x.product_id IS NULL OR x.direction NOT IN ('in','out')
+              OR x.quantity IS NULL OR x.quantity<=0
+              OR (x.direction='in' AND (x.unit_cost IS NULL OR x.unit_cost<=0))
+         )
+    INTO v_invalid,v_line_no,v_has_in
+    FROM jsonb_to_recordset(p_items) AS x(
+      product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
+    );
+  IF v_invalid<>v_line_no OR v_has_in>0 THEN
+    RAISE EXCEPTION 'Adjustment items require unique products, direction in/out, positive quantity and positive unit cost for increases' USING ERRCODE='23514';
+  END IF;
+
+  SELECT bool_or(x.direction='in'),bool_or(x.direction='out')
+    INTO v_has_in,v_has_out
+    FROM jsonb_to_recordset(p_items) AS x(
+      product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
+    );
+
+  IF v_has_in THEN
+    SELECT a.account_type INTO v_account_type
+      FROM public.accounts a
+     WHERE a.organization_id=p_organization_id AND a.id=p_gain_account_id
+       AND a.status='active' AND a.is_postable;
+    IF v_account_type IS DISTINCT FROM 'income' THEN
+      RAISE EXCEPTION 'Inventory increase requires an active postable income account for the adjustment gain' USING ERRCODE='23514';
+    END IF;
+  END IF;
+  IF v_has_out THEN
+    SELECT a.account_type INTO v_account_type
+      FROM public.accounts a
+     WHERE a.organization_id=p_organization_id AND a.id=p_loss_account_id
+       AND a.status='active' AND a.is_postable;
+    IF v_account_type IS DISTINCT FROM 'expense' THEN
+      RAISE EXCEPTION 'Inventory decrease requires an active postable expense account for the adjustment loss' USING ERRCODE='23514';
+    END IF;
+  END IF;
+
+  SELECT count(*) INTO v_invalid
+    FROM jsonb_to_recordset(p_items) AS x(
+      product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
+    )
+    LEFT JOIN public.products p
+      ON p.organization_id=p_organization_id AND p.id=x.product_id
+    LEFT JOIN public.accounts a
+      ON a.organization_id=p.organization_id AND a.id=p.inventory_account_id
+   WHERE p.id IS NULL OR p.status IS NOT TRUE OR a.id IS NULL
+      OR a.account_type<>'asset' OR a.status<>'active' OR NOT a.is_postable;
+  IF v_invalid>0 THEN
+    RAISE EXCEPTION 'Every adjustment product must map to an active postable inventory asset account' USING ERRCODE='23514';
+  END IF;
+
+  PERFORM p.id
+    FROM public.products p
+    JOIN jsonb_to_recordset(p_items) AS x(
+      product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
+    ) ON x.product_id=p.id
+   WHERE p.organization_id=p_organization_id
+   ORDER BY p.id FOR UPDATE OF p;
+
+  PERFORM set_config('zero_erp.allow_workflow','on',true);
+  INSERT INTO public.journal_entries(
+    id,organization_id,entry_date,entry_type,status,reference_type,reference_id,
+    description,created_by,created_at,updated_by,updated_at
+  )
+  VALUES(
+    v_journal_id,p_organization_id,p_adjustment_date,'inventory_adjustment','draft',
+    'inventory_adjustment',v_journal_id,btrim(p_reason),v_user_id,now(),v_user_id,now()
+  );
+
+  FOR v_item IN
+    SELECT x.product_id,x.direction,x.quantity,x.unit_cost,p.inventory_account_id
+      FROM jsonb_to_recordset(p_items) AS x(
+        product_id uuid,direction text,quantity numeric(20,6),unit_cost numeric(20,6)
+      )
+      JOIN public.products p ON p.organization_id=p_organization_id AND p.id=x.product_id
+     ORDER BY x.product_id
+  LOOP
+    v_direction:=v_item.direction;
+    v_quantity:=v_item.quantity;
+    v_unit_cost_input:=v_item.unit_cost;
+    v_inventory_account_id:=v_item.inventory_account_id;
+
+    SELECT b.* INTO v_balance
+      FROM public.inventory_balances b
+     WHERE b.organization_id=p_organization_id AND b.product_id=v_item.product_id
+     FOR UPDATE;
+    v_has_balance:=FOUND;
+
+    IF v_direction='out' AND (NOT v_has_balance OR v_balance.quantity<v_quantity OR v_balance.quantity<=0) THEN
+      RAISE EXCEPTION 'Insufficient inventory for adjustment product %',v_item.product_id USING ERRCODE='23514';
+    END IF;
+
+    IF v_direction='in' THEN
+      v_unit_cost:=v_unit_cost_input;
+      v_total_value:=round(v_quantity*v_unit_cost,4);
+      v_new_qty:=COALESCE(v_balance.quantity,0)+v_quantity;
+      v_new_value:=round(COALESCE(v_balance.inventory_value,0)+v_total_value,4);
+    ELSE
+      v_total_value:=CASE WHEN v_quantity=v_balance.quantity
+                          THEN v_balance.inventory_value
+                          ELSE round(v_quantity*v_balance.average_cost,4) END;
+      IF v_total_value<=0 THEN
+        RAISE EXCEPTION 'Cannot adjust out inventory with zero carrying value' USING ERRCODE='23514';
+      END IF;
+      v_unit_cost:=round(v_total_value/v_quantity,6);
+      v_new_qty:=v_balance.quantity-v_quantity;
+      v_new_value:=CASE WHEN v_new_qty=0 THEN 0 ELSE round(v_balance.inventory_value-v_total_value,4) END;
+    END IF;
+
+    IF v_total_value<=0 THEN
+      RAISE EXCEPTION 'Inventory adjustment value must be greater than zero' USING ERRCODE='23514';
+    END IF;
+    v_new_average:=CASE WHEN v_new_qty=0 THEN 0 ELSE round(v_new_value/v_new_qty,6) END;
+
+    IF v_direction='in' THEN
+      v_line_no:=v_line_no+1;
+      INSERT INTO public.account_transactions(
+        organization_id,journal_entry_id,account_id,line_number,description,debit,credit,created_by,updated_by
+      )
+      VALUES(p_organization_id,v_journal_id,v_inventory_account_id,v_line_no,'Inventory increase',
+             v_total_value,0,v_user_id,v_user_id);
+      v_line_no:=v_line_no+1;
+      INSERT INTO public.account_transactions(
+        organization_id,journal_entry_id,account_id,line_number,description,debit,credit,created_by,updated_by
+      )
+      VALUES(p_organization_id,v_journal_id,p_gain_account_id,v_line_no,'Inventory adjustment gain',
+             0,v_total_value,v_user_id,v_user_id);
+    ELSE
+      v_line_no:=v_line_no+1;
+      INSERT INTO public.account_transactions(
+        organization_id,journal_entry_id,account_id,line_number,description,debit,credit,created_by,updated_by
+      )
+      VALUES(p_organization_id,v_journal_id,p_loss_account_id,v_line_no,'Inventory adjustment loss',
+             v_total_value,0,v_user_id,v_user_id);
+      v_line_no:=v_line_no+1;
+      INSERT INTO public.account_transactions(
+        organization_id,journal_entry_id,account_id,line_number,description,debit,credit,created_by,updated_by
+      )
+      VALUES(p_organization_id,v_journal_id,v_inventory_account_id,v_line_no,'Inventory decrease',
+             0,v_total_value,v_user_id,v_user_id);
+    END IF;
+
+    INSERT INTO public.inventory_transactions(
+      organization_id,code,product_id,transaction_date,transaction_type,direction,
+      quantity,unit_cost,total_value,reference_type,reference_id,unit_cost_before,
+      average_cost_after,created_by
+    )
+    VALUES(
+      p_organization_id,private.allocate_document_number(p_organization_id,'inventory_transactions'),
+      v_item.product_id,p_adjustment_date,'adjustment',v_direction,v_quantity,v_unit_cost,
+      v_total_value,'journal_entry',v_journal_id,
+      CASE WHEN v_has_balance THEN v_balance.average_cost ELSE NULL END,
+      v_new_average,v_user_id
+    );
+
+    IF v_has_balance THEN
+      UPDATE public.inventory_balances
+         SET quantity=v_new_qty,inventory_value=v_new_value,average_cost=v_new_average,
+             updated_by=v_user_id,updated_at=now()
+       WHERE organization_id=p_organization_id AND product_id=v_item.product_id;
+    ELSE
+      INSERT INTO public.inventory_balances(
+        organization_id,product_id,quantity,average_cost,inventory_value,created_by,updated_by,updated_at
+      )
+      VALUES(p_organization_id,v_item.product_id,v_new_qty,v_new_average,v_new_value,v_user_id,v_user_id,now());
+    END IF;
+  END LOOP;
+
+  PERFORM public.post_journal_entry(p_organization_id,v_journal_id);
+  RETURN v_journal_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) TO authenticated,service_role;
+
+COMMIT;
+
+
+-- ============================================================================
+-- SOURCE MIGRATION: 20261108090000_zero_erp_payment_posting.sql
+-- ============================================================================
+
+-- ZERO ERP V1: validated customer receipts and supplier payments.
+-- payment_type values are exactly 'receipt' (customer funds received) and
+-- 'payment' (supplier funds paid). Allocations are validated against posted
+-- source invoices and serialized by locking the invoice row.
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.post_payment(p_organization_id uuid,p_payment_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $function$
+DECLARE
+  v_user_id uuid:=auth.uid();
+  v_org_status text;
+  v_payment public.payments%ROWTYPE;
+  v_account_type text;
+  v_settlement_type text;
+  v_journal_id uuid:=gen_random_uuid();
+  v_alloc record;
+  v_doc_contact uuid;
+  v_doc_account uuid;
+  v_doc_total numeric(20,4);
+  v_returned numeric(20,4);
+  v_previously_allocated numeric(20,4);
+  v_allocated_total numeric(20,4);
+  v_alloc_count bigint;
+BEGIN
+  IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
+    RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
+  END IF;
+
+  SELECT o.status INTO v_org_status
+    FROM public.organizations o WHERE o.id=p_organization_id FOR UPDATE;
+  IF v_org_status IS DISTINCT FROM 'active' THEN
+    RAISE EXCEPTION 'Payment posting requires an active organization' USING ERRCODE='23514';
+  END IF;
+
+  SELECT p.* INTO v_payment
+    FROM public.payments p
+   WHERE p.organization_id=p_organization_id AND p.id=p_payment_id
+   FOR UPDATE;
+  IF NOT FOUND OR v_payment.status<>'draft' OR v_payment.posted_journal_entry_id IS NOT NULL THEN
+    RAISE EXCEPTION 'Payment not found, not draft, or already posted' USING ERRCODE='23514';
+  END IF;
+  IF v_payment.payment_type NOT IN ('receipt','payment') THEN
+    RAISE EXCEPTION 'Payment type must be receipt or payment' USING ERRCODE='23514';
+  END IF;
+  IF v_payment.amount<=0 OR v_payment.contact_id IS NULL OR v_payment.settlement_account_id IS NULL THEN
+    RAISE EXCEPTION 'Payment requires a positive amount, contact, and settlement account' USING ERRCODE='23514';
+  END IF;
+
+  SELECT a.account_type INTO v_account_type
+    FROM public.accounts a
+   WHERE a.organization_id=p_organization_id AND a.id=v_payment.account_id
+     AND a.status='active' AND a.is_postable;
+  IF (v_payment.payment_type='receipt' AND v_account_type IS DISTINCT FROM 'asset')
+     OR (v_payment.payment_type='payment' AND v_account_type IS DISTINCT FROM 'liability') THEN
+    RAISE EXCEPTION 'Receipt requires an active postable receivable asset account; payment requires an active postable payable liability account' USING ERRCODE='23514';
+  END IF;
+
+  SELECT a.account_type INTO v_settlement_type
+    FROM public.accounts a
+   WHERE a.organization_id=p_organization_id AND a.id=v_payment.settlement_account_id
+     AND a.status='active' AND a.is_postable;
+  IF v_settlement_type IS DISTINCT FROM 'asset' THEN
+    RAISE EXCEPTION 'Settlement account must be an active postable asset account' USING ERRCODE='23514';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.contacts c
+     WHERE c.organization_id=p_organization_id AND c.id=v_payment.contact_id AND c.status='active'
+  ) THEN
+    RAISE EXCEPTION 'Payment contact is missing or inactive' USING ERRCODE='23514';
+  END IF;
+
+  SELECT count(*),COALESCE(sum(pa.allocated_amount),0)
+    INTO v_alloc_count,v_allocated_total
+    FROM public.payment_allocations pa
+   WHERE pa.organization_id=p_organization_id AND pa.payment_id=p_payment_id;
+  IF v_allocated_total>v_payment.amount THEN
+    RAISE EXCEPTION 'Payment allocations exceed payment amount' USING ERRCODE='23514';
+  END IF;
+
+  FOR v_alloc IN
+    SELECT pa.document_type,pa.document_id,pa.allocated_amount
+      FROM public.payment_allocations pa
+     WHERE pa.organization_id=p_organization_id AND pa.payment_id=p_payment_id
+     ORDER BY pa.document_type,pa.document_id
+  LOOP
+    IF v_payment.payment_type='receipt' AND v_alloc.document_type='sales' THEN
+      SELECT s.customer_id,s.receivable_account_id,s.total_amount
+        INTO v_doc_contact,v_doc_account,v_doc_total
+        FROM public.sales s
+       WHERE s.organization_id=p_organization_id AND s.id=v_alloc.document_id
+       FOR UPDATE;
+      IF NOT FOUND THEN RAISE EXCEPTION 'Receipt allocation references a missing sale' USING ERRCODE='23514'; END IF;
+      IF NOT EXISTS(SELECT 1 FROM public.sales s WHERE s.organization_id=p_organization_id AND s.id=v_alloc.document_id AND s.status='posted') THEN
+        RAISE EXCEPTION 'Receipt can only be allocated to a posted sale' USING ERRCODE='23514';
+      END IF;
+      SELECT COALESCE(sum(r.total_amount),0) INTO v_returned
+        FROM public.sales_returns r
+       WHERE r.organization_id=p_organization_id AND r.sales_id=v_alloc.document_id AND r.status='posted';
+      SELECT COALESCE(sum(pa.allocated_amount),0) INTO v_previously_allocated
+        FROM public.payment_allocations pa
+        JOIN public.payments p ON p.organization_id=pa.organization_id AND p.id=pa.payment_id
+       WHERE pa.organization_id=p_organization_id AND pa.document_type='sales'
+         AND pa.document_id=v_alloc.document_id AND pa.payment_id<>p_payment_id
+         AND p.payment_type='receipt' AND p.status='posted';
+    ELSIF v_payment.payment_type='payment' AND v_alloc.document_type='purchase' THEN
+      SELECT s.supplier_id,s.payable_account_id,s.total_amount
+        INTO v_doc_contact,v_doc_account,v_doc_total
+        FROM public.purchase s
+       WHERE s.organization_id=p_organization_id AND s.id=v_alloc.document_id
+       FOR UPDATE;
+      IF NOT FOUND THEN RAISE EXCEPTION 'Payment allocation references a missing purchase' USING ERRCODE='23514'; END IF;
+      IF NOT EXISTS(SELECT 1 FROM public.purchase s WHERE s.organization_id=p_organization_id AND s.id=v_alloc.document_id AND s.status='posted') THEN
+        RAISE EXCEPTION 'Payment can only be allocated to a posted purchase' USING ERRCODE='23514';
+      END IF;
+      SELECT COALESCE(sum(r.total_amount),0) INTO v_returned
+        FROM public.purchase_returns r
+       WHERE r.organization_id=p_organization_id AND r.purchase_id=v_alloc.document_id AND r.status='posted';
+      SELECT COALESCE(sum(pa.allocated_amount),0) INTO v_previously_allocated
+        FROM public.payment_allocations pa
+        JOIN public.payments p ON p.organization_id=pa.organization_id AND p.id=pa.payment_id
+       WHERE pa.organization_id=p_organization_id AND pa.document_type='purchase'
+         AND pa.document_id=v_alloc.document_id AND pa.payment_id<>p_payment_id
+         AND p.payment_type='payment' AND p.status='posted';
+    ELSE
+      RAISE EXCEPTION 'Allocation document type does not match payment type' USING ERRCODE='23514';
+    END IF;
+
+    IF v_doc_contact IS DISTINCT FROM v_payment.contact_id
+       OR v_doc_account IS DISTINCT FROM v_payment.account_id THEN
+      RAISE EXCEPTION 'Allocation contact or control account does not match the source invoice' USING ERRCODE='23514';
+    END IF;
+    IF v_alloc.allocated_amount<=0
+       OR v_alloc.allocated_amount>round(v_doc_total-v_returned-v_previously_allocated,4) THEN
+      RAISE EXCEPTION 'Allocation exceeds the remaining invoice balance' USING ERRCODE='23514';
+    END IF;
+  END LOOP;
+
+  PERFORM set_config('zero_erp.allow_workflow','on',true);
+  INSERT INTO public.journal_entries(
+    id,organization_id,entry_date,entry_type,status,reference_type,reference_id,
+    description,created_by,created_at,updated_by,updated_at
+  )
+  VALUES(
+    v_journal_id,p_organization_id,v_payment.payment_date,
+    CASE WHEN v_payment.payment_type='receipt' THEN 'receipt' ELSE 'payment' END,
+    'draft','payment',p_payment_id,
+    COALESCE(v_payment.description,CASE WHEN v_payment.payment_type='receipt' THEN 'Customer receipt' ELSE 'Supplier payment' END),
+    v_user_id,now(),v_user_id,now()
+  );
+
+  IF v_payment.payment_type='receipt' THEN
+    INSERT INTO public.account_transactions(
+      organization_id,journal_entry_id,account_id,line_number,description,debit,credit,contact_id,created_by,updated_by
+    ) VALUES
+      (p_organization_id,v_journal_id,v_payment.settlement_account_id,1,'Cash/bank received',v_payment.amount,0,NULL,v_user_id,v_user_id),
+      (p_organization_id,v_journal_id,v_payment.account_id,2,'Customer receivable settled',0,v_payment.amount,v_payment.contact_id,v_user_id,v_user_id);
+  ELSE
+    INSERT INTO public.account_transactions(
+      organization_id,journal_entry_id,account_id,line_number,description,debit,credit,contact_id,created_by,updated_by
+    ) VALUES
+      (p_organization_id,v_journal_id,v_payment.account_id,1,'Supplier payable settled',v_payment.amount,0,v_payment.contact_id,v_user_id,v_user_id),
+      (p_organization_id,v_journal_id,v_payment.settlement_account_id,2,'Cash/bank paid',0,v_payment.amount,NULL,v_user_id,v_user_id);
+  END IF;
+
+  PERFORM public.post_journal_entry(p_organization_id,v_journal_id);
+
+  UPDATE public.payments
+     SET code=COALESCE(code,private.allocate_document_number(p_organization_id,'payments')),
+         status='posted',confirmed_at=now(),confirmed_by=v_user_id,
+         posted_by=v_user_id,posted_journal_entry_id=v_journal_id,
+         updated_by=v_user_id,updated_at=now()
+   WHERE organization_id=p_organization_id AND id=p_payment_id AND status='draft';
+  IF NOT FOUND THEN RAISE EXCEPTION 'Payment posting failed' USING ERRCODE='23514'; END IF;
+
+  RETURN v_journal_id;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION public.post_payment(uuid,uuid) FROM PUBLIC,anon;
+GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
+
+COMMIT;
