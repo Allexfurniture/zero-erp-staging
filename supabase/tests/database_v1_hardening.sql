@@ -176,6 +176,7 @@ DECLARE
   v_supplier uuid:=gen_random_uuid();
   v_customer uuid:=gen_random_uuid();
   v_product uuid:=gen_random_uuid();
+  v_other_product uuid:=gen_random_uuid();
   v_precision_product uuid:=gen_random_uuid();
   v_opening uuid:=gen_random_uuid();
   v_purchase uuid:=gen_random_uuid();
@@ -232,7 +233,9 @@ BEGIN
     (v_supplier,v_org,private.allocate_document_number(v_org,'contacts'),'Smoke Supplier','active',v_user),
     (v_customer,v_org,private.allocate_document_number(v_org,'contacts'),'Smoke Customer','active',v_user);
   INSERT INTO public.products(id,organization_id,code,name,unit_id,inventory_account_id,sales_account_id,cogs_account_id,status,created_by)
-  VALUES(v_product,v_org,private.allocate_document_number(v_org,'products'),'Smoke Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user);
+  VALUES
+    (v_product,v_org,private.allocate_document_number(v_org,'products'),'Smoke Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user),
+    (v_other_product,v_org,private.allocate_document_number(v_org,'products'),'Other Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user);
 
   INSERT INTO public.purchase(id,organization_id,supplier_id,invoice_date,status,subtotal,discount_amount,total_amount,payable_account_id,created_by)
   VALUES(v_purchase,v_org,v_supplier,current_date,'draft',100,10,90,v_payable,v_user);
@@ -265,6 +268,39 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM public.sales WHERE id=v_sale AND status='posted' AND posted_journal_entry_id=v_sales_journal) THEN
     RAISE EXCEPTION 'Sales posting did not finalize source document';
   END IF;
+
+  -- Return headers must match source counterparty; return lines must match the
+  -- exact source document line and product.
+  DECLARE
+    v_purchase_return uuid:=gen_random_uuid();
+    v_sales_return uuid:=gen_random_uuid();
+    v_purchase_item uuid;
+    v_sales_item uuid;
+    v_return_rejected boolean:=false;
+  BEGIN
+    SELECT id INTO v_purchase_item FROM public.purchase_items WHERE organization_id=v_org AND purchase_id=v_purchase;
+    INSERT INTO public.purchase_returns(id,organization_id,purchase_id,supplier_id,return_date,payable_account_id,created_by)
+    VALUES(v_purchase_return,v_org,v_purchase,v_supplier,current_date,v_payable,v_user);
+    BEGIN
+      INSERT INTO public.purchase_return_items(organization_id,purchase_return_id,line_number,purchase_item_id,product_id,quantity,unit_cost,line_total,created_by)
+      VALUES(v_org,v_purchase_return,1,v_purchase_item,v_other_product,1,10,10,v_user);
+    EXCEPTION WHEN check_violation THEN
+      v_return_rejected:=true;
+    END;
+    IF NOT v_return_rejected THEN RAISE EXCEPTION 'Purchase return accepted a product different from its source line'; END IF;
+
+    SELECT id INTO v_sales_item FROM public.sales_items WHERE organization_id=v_org AND sales_id=v_sale;
+    v_return_rejected:=false;
+    INSERT INTO public.sales_returns(id,organization_id,sales_id,customer_id,return_date,receivable_account_id,created_by)
+    VALUES(v_sales_return,v_org,v_sale,v_customer,current_date,v_receivable,v_user);
+    BEGIN
+      INSERT INTO public.sales_return_items(organization_id,sales_return_id,line_number,sales_item_id,product_id,quantity,unit_price,line_total,created_by)
+      VALUES(v_org,v_sales_return,1,v_sales_item,v_other_product,1,20,20,v_user);
+    EXCEPTION WHEN check_violation THEN
+      v_return_rejected:=true;
+    END;
+    IF NOT v_return_rejected THEN RAISE EXCEPTION 'Sales return accepted a product different from its source line'; END IF;
+  END;
   SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances WHERE organization_id=v_org AND product_id=v_product;
   IF v_qty<>6 OR v_value<>54 THEN
     RAISE EXCEPTION 'Sales inventory balance incorrect: quantity %, value %',v_qty,v_value;
