@@ -1,9 +1,11 @@
 -- ZERO ERP canonical initial database schema
--- Fresh, empty dedicated ZERO ERP Supabase project only.
--- Reconcile migration history and compare schemas before any existing-database deployment.
--- Supabase-managed auth/storage schemas and environment secrets are not included.
+-- Status: Production-oriented canonical baseline; production deployment is not
+-- authorized by this label. Promote only after the full release-readiness gate.
+-- Scope: A new, empty, dedicated ZERO ERP Supabase project.
+-- Existing databases require migration-history reconciliation and schema review.
+-- Supabase-managed auth/storage schemas and environment-specific secrets are excluded.
 --
--- EXECUTION ORDER
+-- CONTENTS
 -- 01-02  Core tables, constraints and tenant-safe relationships
 -- 03-04  RLS policies and private security helpers
 -- 05-09  Audit, numbering, defaults, provisioning and workflow guardrails
@@ -13,13 +15,8 @@
 -- 22-24  Reversals, private implementations and RPC security facades
 -- 25     Return-source integrity
 --
--- Ordered function revisions are retained where later definitions harden earlier behavior.
-
--- ZERO ERP canonical initial database schema (squashed migration)
--- Intended for a NEW, EMPTY dedicated ZERO ERP Supabase database only.
--- Do not apply to an existing database or production without migration-history
--- reconciliation and a schema diff. Does not include Supabase-managed auth/storage
--- schemas or environment-specific secrets.
+-- Historical function revisions are retained where later definitions harden
+-- earlier behavior. The final effective definition is authoritative.
 
 -- 01. CORE TABLES AND INITIAL SCHEMA
 
