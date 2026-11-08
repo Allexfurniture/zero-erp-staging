@@ -1,32 +1,34 @@
-# ZERO ERP staging-to-production migration notes
+# ZERO ERP canonical database migration notes
 
-## Current staging branch
+## Canonical migration
 
-Branch: `fix/database-v1-hardening`
+The repository now contains exactly one file in `supabase/migrations/`:
 
-The current hardening work is committed to this branch. The newest ordered migrations are:
+`20261109000000_zero_erp_canonical_initial_schema.sql`
 
-1. `20261108098000_zero_erp_return_reversals_and_rpc_grants.sql`
-2. `20261108098100_zero_erp_secure_rpc_facade.sql`
+This is a squashed, ordered replay of the ZERO ERP migration SQL retained in the repository. It includes the baseline schema, tenant ownership and RLS, accounting and inventory posting, returns, opening-balance subledger, control-account guards, reversals, and secure RPC facades.
 
-The staging database has both changes applied and verified. The Supabase MCP migration history assigns remote version IDs independently of the local migration filename timestamps; do not assume the remote version strings will exactly match the filenames.
+The source migration markers are preserved in the file so each section can be traced to its source migration. The old individual migration files were removed from the active migrations directory after consolidation. Git history retains the prior commits.
+
+The repository contained two migration-history entries not represented by separate source files: `zero_erp_return_source_integrity` and `zero_erp_inventory_adjustment_validation_fix`. Their resulting constraints and inventory-adjustment validation logic are present in the consolidated SQL via later retained migration content. The repository also contained a duplicate migration blob for the inventory-control-account fix; it was not replayed twice.
+
+## Important migration-history warning
+
+The live staging database still has its original 22 applied migration-history records. The repository now has one local migration file. This is intentional for a clean-install baseline, but the local and remote migration histories are no longer a direct one-to-one match.
+
+- Use the canonical migration only to initialize a new, empty, dedicated ZERO ERP database.
+- Do not run `supabase db push` against the existing staging or production database until migration history is explicitly reconciled.
+- Do not apply the canonical migration to an already initialized database; its DDL is a fresh-install replay and is not an in-place upgrade.
+- For existing environments, compare the live schema and reconcile migration history separately. Do not reset or drop existing data to make the histories match.
 
 ## Production safety
 
 - The production project and the separate `allexfurniture` website database were not modified.
-- Do not run the initial bootstrap migration against an existing/populated production database. It contains schema-drop/recreate operations intended only for an empty database.
-- Do not run `supabase db push` blindly until production migration history has been reconciled with the repository and the production schema has been compared against the intended ZERO ERP baseline.
-- Prepare a production rollout bundle from the intended baseline and the verified staging changes. Review every migration for destructive DDL and data assumptions before applying it.
-- Apply the two latest migrations only after their prerequisites and migration-history state have been verified in the target database.
+- No production migration has been applied.
+- The canonical file is not a production upgrade script. Review and test it on a separate empty database before using it for a new installation.
 
-## Verification status on staging
+## Staging verification
 
-- Database hardening smoke suite: passed.
-- Real-life authenticated business lifecycle suite: passed.
-- Control-account validation suite: passed.
-- Purchase/sales return reversal lifecycle suite: passed.
-- Cross-tenant RLS and posting authorization test: passed.
-- Supabase security advisor: no findings.
-- Supabase health advisor: no findings.
+Before consolidation, all four SQL regression suites passed, including the return-reversal lifecycle and cross-tenant RLS/posting isolation tests. Security and health advisors reported no findings. The live staging database was inspected while creating the canonical file; it has 22 migration-history entries.
 
-The remaining performance-advisor unused-index notices are informational on the lightly populated staging database. Foreign-key indexes were intentionally retained; lack of observed use in staging is not evidence that they should be dropped.
+A clean-database replay of the single consolidated file has not yet been performed. Therefore the file is consolidated and repository-checked, but not yet certified as a clean-install replay.
