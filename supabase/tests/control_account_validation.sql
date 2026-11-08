@@ -73,6 +73,14 @@ BEGIN
   RETURNING id INTO v_custom_receivable;
   INSERT INTO public.sales(organization_id,customer_id,invoice_date,status,subtotal,discount_amount,total_amount,receivable_account_id,created_by)
   VALUES(v_org,v_customer,current_date,'draft',100,0,100,v_custom_receivable,v_user);
+
+  BEGIN
+    UPDATE public.accounts SET requires_contact=false
+     WHERE organization_id=v_org AND id=v_custom_receivable;
+    RAISE EXCEPTION 'Control account contact semantics were mutable after document use';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
 END;
 $checks$;
 RESET ROLE;
