@@ -2072,12 +2072,12 @@ BEGIN
   SELECT count(*),count(DISTINCT x.product_id),
          COALESCE(sum(round(x.quantity*x.unit_cost,4)),0)
     INTO v_item_count,v_distinct_products,v_inventory_total
-    FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric,unit_cost numeric);
+    FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric(20,6),unit_cost numeric(20,6));
   IF v_item_count<>v_distinct_products THEN
     RAISE EXCEPTION 'Inventory opening items contain duplicate products' USING ERRCODE='23514';
   END IF;
   IF EXISTS (
-    SELECT 1 FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric,unit_cost numeric)
+    SELECT 1 FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric(20,6),unit_cost numeric(20,6))
     WHERE x.product_id IS NULL OR x.quantity IS NULL OR x.unit_cost IS NULL
        OR x.quantity<=0 OR x.unit_cost<0
   ) THEN
@@ -2088,7 +2088,7 @@ BEGIN
   END IF;
   IF EXISTS (
     SELECT 1
-      FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric,unit_cost numeric)
+      FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric(20,6),unit_cost numeric(20,6))
       LEFT JOIN public.products p ON p.organization_id=p_organization_id AND p.id=x.product_id
      WHERE p.id IS NULL OR p.status IS NOT TRUE OR p.inventory_account_id IS DISTINCT FROM v_inventory_account_id
   ) THEN
@@ -2118,7 +2118,7 @@ BEGIN
 
   FOR v_item IN
     SELECT x.product_id,x.quantity,x.unit_cost
-      FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric,unit_cost numeric)
+      FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric(20,6),unit_cost numeric(20,6))
      ORDER BY x.product_id
   LOOP
     v_total_value := round(v_item.quantity*v_item.unit_cost,4);
