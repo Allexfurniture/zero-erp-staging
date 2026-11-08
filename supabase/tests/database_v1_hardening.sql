@@ -84,12 +84,12 @@ BEGIN
     RAISE EXCEPTION 'Draft document guard does not protect reversal_of_id';
   END IF;
 
-  SELECT pg_get_functiondef('public.post_journal_entry(uuid,uuid)'::regprocedure) INTO v_def;
+  SELECT pg_get_functiondef('private.post_journal_entry(uuid,uuid)'::regprocedure) INTO v_def;
   IF position('exactly invert the original journal' IN v_def)=0 THEN
     RAISE EXCEPTION 'Journal posting does not verify exact reversal lines';
   END IF;
 
-  SELECT pg_get_functiondef('public.reverse_journal_entry(uuid,uuid,date,text)'::regprocedure) INTO v_def;
+  SELECT pg_get_functiondef('private.reverse_journal_entry(uuid,uuid,date,text)'::regprocedure) INTO v_def;
   IF position('source-document workflow' IN v_def)=0 THEN
     RAISE EXCEPTION 'Generic journal reversal must reject referenced source-document journals';
   END IF;
@@ -99,12 +99,12 @@ BEGIN
     RAISE EXCEPTION 'Account code sequence is not creator-restricted';
   END IF;
 
-  SELECT pg_get_functiondef('public.complete_organization_setup(uuid,jsonb,boolean)'::regprocedure) INTO v_def;
+  SELECT pg_get_functiondef('private.complete_organization_setup(uuid,jsonb,boolean)'::regprocedure) INTO v_def;
   IF position('sum(round(x.quantity*x.unit_cost,4))' IN v_def)=0 THEN
     RAISE EXCEPTION 'Opening inventory rounding policy is inconsistent';
   END IF;
 
-  SELECT pg_get_functiondef('public.post_expense(uuid,uuid)'::regprocedure) INTO v_def;
+  SELECT pg_get_functiondef('private.post_expense(uuid,uuid)'::regprocedure) INTO v_def;
   IF position('Expense settlement account must be an asset' IN v_def)=0 THEN
     RAISE EXCEPTION 'Expense settlement account type is not validated';
   END IF;
@@ -121,6 +121,21 @@ BEGIN
      AND has_function_privilege('anon',p.oid,'EXECUTE');
   IF v_anon_definer_count>0 THEN
     RAISE EXCEPTION 'Found % public SECURITY DEFINER functions executable by anon',v_anon_definer_count;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+     WHERE n.nspname='public' AND p.prosecdef
+       AND has_function_privilege('authenticated',p.oid,'EXECUTE')
+       AND p.proname<>'next_document_number'
+  ) THEN
+    RAISE EXCEPTION 'Public workflow RPCs must be SECURITY INVOKER wrappers';
+  END IF;
+
+  IF to_regprocedure('public.reverse_purchase_return(uuid,uuid,date,text)') IS NULL
+     OR to_regprocedure('public.reverse_sales_return(uuid,uuid,date,text)') IS NULL
+     OR to_regprocedure('private.reverse_source_journal(uuid,uuid,text,uuid,date,text)') IS NULL THEN
+    RAISE EXCEPTION 'Source return reversal workflows are missing';
   END IF;
 END;
 $tests$;
