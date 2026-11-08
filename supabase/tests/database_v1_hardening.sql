@@ -17,6 +17,23 @@ BEGIN
     RAISE EXCEPTION 'RLS is disabled on public tables: %',v_missing_rls;
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='organizations' AND column_name='owner_user_id'
+  ) THEN
+    RAISE EXCEPTION 'Organizations must have an explicit owner_user_id';
+  END IF;
+
+  SELECT pg_get_functiondef('private.is_org_creator(uuid)'::regprocedure) INTO v_def;
+  IF position('owner_user_id' IN v_def)=0 THEN
+    RAISE EXCEPTION 'Organization creator authorization must use owner_user_id';
+  END IF;
+
+  SELECT pg_get_functiondef('private.enforce_organization_scope_immutable()'::regprocedure) INTO v_def;
+  IF position('organization_id is immutable' IN v_def)=0 THEN
+    RAISE EXCEPTION 'Organization scope immutability guard is missing';
+  END IF;
+
   SELECT pg_get_functiondef('private.enforce_draft_document()'::regprocedure) INTO v_def;
   IF position('reversal_of_id' IN v_def)=0 THEN
     RAISE EXCEPTION 'Draft document guard does not protect reversal_of_id';
