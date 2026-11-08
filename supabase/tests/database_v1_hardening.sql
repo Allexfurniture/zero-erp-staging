@@ -454,3 +454,84 @@ BEGIN
 END;
 $posting_integration$;
 ROLLBACK;
+
+
+-- Authenticated-role RLS test: active members see only their tenant, can
+-- maintain member-level records, and cannot administer accounts or sequences.
+BEGIN;
+DO $rls_member_isolation_setup$
+DECLARE
+  v_owner uuid:=gen_random_uuid();
+  v_member uuid:=gen_random_uuid();
+  v_org_a uuid;
+  v_org_b uuid;
+BEGIN
+  INSERT INTO auth.users(id,aud,role,email,encrypted_password,raw_app_meta_data,raw_user_meta_data,email_confirmed_at,created_at,updated_at)
+  VALUES
+    (v_owner,'authenticated','authenticated','zero-rls-owner-'||v_owner::text||'@example.invalid','','{}','{}',now(),now(),now()),
+    (v_member,'authenticated','authenticated','zero-rls-member-'||v_member::text||'@example.invalid','','{}','{}',now(),now(),now());
+  PERFORM set_config('request.jwt.claim.sub',v_owner::text,true);
+  PERFORM set_config('request.jwt.claims',jsonb_build_object('sub',v_owner::text,'role','authenticated')::text,true);
+  v_org_a:=public.create_organization('ZERO ERP RLS member organization');
+  v_org_b:=public.create_organization('ZERO ERP RLS private organization');
+  INSERT INTO public.organization_users(organization_id,user_id,status,created_by)
+  VALUES(v_org_a,v_member,'active',v_owner);
+  PERFORM set_config('zero_erp.test_org_a',v_org_a::text,true);
+  PERFORM set_config('zero_erp.test_org_b',v_org_b::text,true);
+  PERFORM set_config('request.jwt.claim.sub',v_member::text,true);
+  PERFORM set_config('request.jwt.claims',jsonb_build_object('sub',v_member::text,'role','authenticated')::text,true);
+END;
+$rls_member_isolation_setup$;
+
+SET LOCAL ROLE authenticated;
+DO $rls_member_isolation_assert$
+DECLARE
+  v_org_a uuid:=current_setting('zero_erp.test_org_a')::uuid;
+  v_org_b uuid:=current_setting('zero_erp.test_org_b')::uuid;
+  v_blocked boolean:=false;
+  v_rows integer;
+BEGIN
+  IF NOT EXISTS(SELECT 1 FROM public.organizations WHERE id=v_org_a) THEN
+    RAISE EXCEPTION 'Member cannot read organization membership';
+  END IF;
+  IF EXISTS(SELECT 1 FROM public.organizations WHERE id=v_org_b) THEN
+    RAISE EXCEPTION 'Cross-tenant organization data leaked';
+  END IF;
+  IF NOT EXISTS(SELECT 1 FROM public.accounts WHERE organization_id=v_org_a) THEN
+    RAISE EXCEPTION 'Member cannot read organization chart of accounts';
+  END IF;
+  IF EXISTS(SELECT 1 FROM public.accounts WHERE organization_id=v_org_b) THEN
+    RAISE EXCEPTION 'Cross-tenant accounts leaked';
+  END IF;
+
+  INSERT INTO public.contacts(organization_id,code,name,status)
+  VALUES(v_org_a,'MEMBER-TEST','Member contact','active');
+
+  BEGIN
+    INSERT INTO public.accounts(organization_id,code,account_name,account_type,normal_balance,is_control_account,is_postable,status)
+    VALUES(v_org_a,'1199','Member-created account','asset','debit',false,true,'active');
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_blocked:=true;
+  END;
+  IF NOT v_blocked THEN RAISE EXCEPTION 'Ordinary member could create a creator-managed account'; END IF;
+
+  UPDATE public.number_sequences SET next_number=next_number+1
+   WHERE organization_id=v_org_a AND document_type='sales';
+  GET DIAGNOSTICS v_rows=ROW_COUNT;
+  IF v_rows<>0 THEN RAISE EXCEPTION 'Ordinary member modified a read-only number sequence'; END IF;
+
+  v_blocked:=false;
+  BEGIN
+    PERFORM public.next_account_code(v_org_a,'asset');
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_blocked:=true;
+  END;
+  IF NOT v_blocked THEN RAISE EXCEPTION 'Ordinary member could allocate account codes'; END IF;
+
+  IF has_function_privilege('authenticated','public.next_document_number(uuid,text)','EXECUTE') THEN
+    RAISE EXCEPTION 'Authenticated role can directly call document number allocator';
+  END IF;
+END;
+$rls_member_isolation_assert$;
+RESET ROLE;
+ROLLBACK;
