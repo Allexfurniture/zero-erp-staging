@@ -5477,6 +5477,7 @@ END;
 $verify_facade$;
 COMMIT;
 
+-- 25. RETURN-SOURCE INTEGRITY
 BEGIN;
 
 CREATE OR REPLACE FUNCTION private.enforce_purchase_return_source_integrity()
