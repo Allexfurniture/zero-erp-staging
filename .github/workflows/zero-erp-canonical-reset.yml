@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - fix/database-v1-hardening
-    paths:
-      - .github/workflows/zero-erp-canonical-reset.yml
   workflow_dispatch:
     inputs:
       confirm_project_ref:
@@ -22,6 +20,7 @@ concurrency:
 
 jobs:
   canonical-reset:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-zero-erp-reset]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
