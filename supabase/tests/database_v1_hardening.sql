@@ -49,6 +49,11 @@ BEGIN
     RAISE EXCEPTION 'Journal posting does not verify exact reversal lines';
   END IF;
 
+  SELECT pg_get_functiondef('public.reverse_journal_entry(uuid,uuid,date,text)'::regprocedure) INTO v_def;
+  IF position('source-document workflow' IN v_def)=0 THEN
+    RAISE EXCEPTION 'Generic journal reversal must reject referenced source-document journals';
+  END IF;
+
   SELECT pg_get_functiondef('public.next_document_number(uuid,text)'::regprocedure) INTO v_def;
   IF position('Only the organization creator may allocate account codes' IN v_def)=0 THEN
     RAISE EXCEPTION 'Account code sequence is not creator-restricted';
@@ -211,6 +216,14 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM public.purchase WHERE id=v_purchase AND status='posted' AND posted_journal_entry_id=v_purchase_journal) THEN
     RAISE EXCEPTION 'Purchase posting did not finalize source document';
   END IF;
+
+  v_failed:=false;
+  BEGIN
+    PERFORM public.reverse_journal_entry(v_org,v_purchase_journal,current_date,'Should use purchase workflow');
+  EXCEPTION WHEN check_violation THEN
+    v_failed:=true;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'Generic reversal was allowed for a purchase journal'; END IF;
   SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances WHERE organization_id=v_org AND product_id=v_product;
   IF v_qty<>10 OR v_value<>90 THEN
     RAISE EXCEPTION 'Purchase inventory balance incorrect: quantity %, value %',v_qty,v_value;
@@ -247,6 +260,25 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM public.sales WHERE id=v_overstock_sale AND status='draft' AND posted_journal_entry_id IS NULL) THEN
     RAISE EXCEPTION 'Failed sale was not rolled back to draft';
   END IF;
+
+  -- Generic reversal remains available for an unreferenced manual journal.
+  DECLARE
+    v_manual_id uuid:=gen_random_uuid();
+    v_manual_posted uuid;
+    v_manual_reversal uuid;
+    v_expense_account uuid;
+  BEGIN
+    SELECT id INTO v_expense_account FROM public.accounts WHERE organization_id=v_org AND code='5200';
+    INSERT INTO public.journal_entries(id,organization_id,entry_date,entry_type,status,description,created_by)
+    VALUES(v_manual_id,v_org,current_date,'manual','draft','Manual journal reversal test',v_user);
+    INSERT INTO public.account_transactions(organization_id,journal_entry_id,account_id,line_number,debit,credit,created_by)
+    VALUES(v_org,v_manual_id,v_expense_account,1,25,0,v_user),(v_org,v_manual_id,v_cash,2,0,25,v_user);
+    v_manual_posted:=public.post_journal_entry(v_org,v_manual_id);
+    v_manual_reversal:=public.reverse_journal_entry(v_org,v_manual_posted,current_date,'Smoke test reversal');
+    IF NOT EXISTS(SELECT 1 FROM public.journal_entries WHERE id=v_manual_id AND reversal_journal_entry_id=v_manual_reversal) THEN
+      RAISE EXCEPTION 'Manual journal reversal metadata was not finalized';
+    END IF;
+  END;
 
   IF EXISTS(
     SELECT 1 FROM public.account_transactions t
