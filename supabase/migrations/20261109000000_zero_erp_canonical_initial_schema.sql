@@ -5792,3 +5792,70 @@ BEGIN
 END;
 $verify_facade$;
 COMMIT;
+
+-- Recovered return-source integrity rules from the historical
+-- zero_erp_return_source_integrity migration record.
+-- A return line must match both its source document and source product.
+BEGIN;
+
+CREATE OR REPLACE FUNCTION private.enforce_purchase_return_source_integrity()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path TO ''
+AS $function$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.purchase_items pi
+      JOIN public.purchase_returns pr
+        ON pr.organization_id=NEW.organization_id
+       AND pr.id=NEW.purchase_return_id
+     WHERE pi.organization_id=NEW.organization_id
+       AND pi.id=NEW.purchase_item_id
+       AND pi.purchase_id=pr.purchase_id
+       AND pi.product_id=NEW.product_id
+  ) THEN
+    RAISE EXCEPTION 'Purchase return item must match its source purchase line and product'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION private.enforce_sales_return_source_integrity()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path TO ''
+AS $function$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.sales_items si
+      JOIN public.sales_returns sr
+        ON sr.organization_id=NEW.organization_id
+       AND sr.id=NEW.sales_return_id
+     WHERE si.organization_id=NEW.organization_id
+       AND si.id=NEW.sales_item_id
+       AND si.sales_id=sr.sales_id
+       AND si.product_id=NEW.product_id
+  ) THEN
+    RAISE EXCEPTION 'Sales return item must match its source sales line and product'
+      USING ERRCODE='23514';
+  END IF;
+  RETURN NEW;
+END;
+$function$;
+
+DROP TRIGGER IF EXISTS purchase_return_items_source_integrity ON public.purchase_return_items;
+CREATE TRIGGER purchase_return_items_source_integrity
+BEFORE INSERT OR UPDATE OF organization_id,purchase_return_id,purchase_item_id,product_id
+ON public.purchase_return_items
+FOR EACH ROW EXECUTE FUNCTION private.enforce_purchase_return_source_integrity();
+
+DROP TRIGGER IF EXISTS sales_return_items_source_integrity ON public.sales_return_items;
+CREATE TRIGGER sales_return_items_source_integrity
+BEFORE INSERT OR UPDATE OF organization_id,sales_return_id,sales_item_id,product_id
+ON public.sales_return_items
+FOR EACH ROW EXECUTE FUNCTION private.enforce_sales_return_source_integrity();
+
+COMMIT;
