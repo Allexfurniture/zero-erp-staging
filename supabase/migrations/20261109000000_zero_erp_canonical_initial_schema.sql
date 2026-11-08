@@ -4288,6 +4288,8 @@ DECLARE
   v_has_in boolean;
   v_has_out boolean;
   v_invalid bigint;
+  v_item_count bigint;
+  v_distinct_products bigint;
 BEGIN
   IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
     RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
