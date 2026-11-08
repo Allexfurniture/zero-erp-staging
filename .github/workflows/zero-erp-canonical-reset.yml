@@ -56,6 +56,10 @@ jobs:
           test "${#existing[@]}" -eq 1
           test "${existing[0]}" = "20261109000000_zero_erp_canonical_initial_schema.sql"
 
+          if [ ! -f supabase/config.toml ]; then
+            printf 'project_id = "zero-erp-staging"\\n' > supabase/config.toml
+          fi
+
           supabase migration new canonical_zero_initial_erp_database_schema
           mapfile -t generated < <(find supabase/migrations -maxdepth 1 -type f -name '*_canonical_zero_initial_erp_database_schema.sql' -print)
           test "${#generated[@]}" -eq 1
@@ -78,7 +82,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A supabase/migrations
+          git add -A supabase/migrations supabase/config.toml
           git commit -m "chore(db): establish canonical ZERO ERP initial schema"
           git push origin HEAD:fix/database-v1-hardening
 
@@ -105,6 +109,17 @@ jobs:
         run: |
           set -euo pipefail
           supabase migration list --remote
+          export PGHOST="db.${SUPABASE_PROJECT_ID}.supabase.co"
+          export PGPORT="5432"
+          export PGDATABASE="postgres"
+          export PGUSER="postgres"
+          export PGPASSWORD="$SUPABASE_DB_PASSWORD"
+          export PGSSLMODE="require"
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          migration_count="$(psql -v ON_ERROR_STOP=1 -Atqc 'select count(*) from supabase_migrations.schema_migrations')"
+          test "$migration_count" = "1"
+          echo "Verified exactly one canonical migration in remote history."
 
       - name: Run complete ZERO ERP regression suite
         shell: bash
