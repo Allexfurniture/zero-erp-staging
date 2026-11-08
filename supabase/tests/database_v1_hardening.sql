@@ -387,6 +387,40 @@ BEGIN
     IF v_cogs_total<>9 THEN RAISE EXCEPTION 'Sales return COGS restoration incorrect: %',v_cogs_total; END IF;
   END;
 
+  -- Receipts and supplier payments post balanced journals and allocate only to
+  -- matching posted invoices for the same contact/control account.
+  DECLARE
+    v_receipt_id uuid:=gen_random_uuid();
+    v_supplier_payment_id uuid:=gen_random_uuid();
+    v_payment_journal uuid;
+  BEGIN
+    INSERT INTO public.payments(id,organization_id,payment_type,contact_id,payment_date,amount,account_id,settlement_account_id,created_by)
+    VALUES(v_receipt_id,v_org,'receipt',v_customer,current_date,5,v_receivable,v_cash,v_user);
+    INSERT INTO public.payment_allocations(organization_id,payment_id,document_type,document_id,allocated_amount,created_by)
+    VALUES(v_org,v_receipt_id,'sales',v_sale,5,v_user);
+    v_payment_journal:=public.post_payment(v_org,v_receipt_id);
+    IF NOT EXISTS(SELECT 1 FROM public.payments WHERE id=v_receipt_id AND status='posted' AND posted_journal_entry_id=v_payment_journal) THEN
+      RAISE EXCEPTION 'Customer receipt did not post';
+    END IF;
+    IF (SELECT round(sum(debit),4) FROM public.account_transactions WHERE organization_id=v_org AND journal_entry_id=v_payment_journal)<>5
+       OR (SELECT round(sum(credit),4) FROM public.account_transactions WHERE organization_id=v_org AND journal_entry_id=v_payment_journal)<>5 THEN
+      RAISE EXCEPTION 'Customer receipt journal is unbalanced';
+    END IF;
+
+    INSERT INTO public.payments(id,organization_id,payment_type,contact_id,payment_date,amount,account_id,settlement_account_id,created_by)
+    VALUES(v_supplier_payment_id,v_org,'payment',v_supplier,current_date,5,v_payable,v_cash,v_user);
+    INSERT INTO public.payment_allocations(organization_id,payment_id,document_type,document_id,allocated_amount,created_by)
+    VALUES(v_org,v_supplier_payment_id,'purchase',v_purchase,5,v_user);
+    v_payment_journal:=public.post_payment(v_org,v_supplier_payment_id);
+    IF NOT EXISTS(SELECT 1 FROM public.payments WHERE id=v_supplier_payment_id AND status='posted' AND posted_journal_entry_id=v_payment_journal) THEN
+      RAISE EXCEPTION 'Supplier payment did not post';
+    END IF;
+    IF (SELECT round(sum(debit),4) FROM public.account_transactions WHERE organization_id=v_org AND journal_entry_id=v_payment_journal)<>5
+       OR (SELECT round(sum(credit),4) FROM public.account_transactions WHERE organization_id=v_org AND journal_entry_id=v_payment_journal)<>5 THEN
+      RAISE EXCEPTION 'Supplier payment journal is unbalanced';
+    END IF;
+  END;
+
   v_adjustment_journal:=public.post_inventory_adjustment(
     v_org,current_date,'Mixed inventory adjustment',
     jsonb_build_array(
