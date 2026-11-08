@@ -24,6 +24,8 @@ BEGIN
   IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
     RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
   END IF;
+  PERFORM o.id FROM public.organizations o WHERE o.id=p_organization_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Organization not found' USING ERRCODE='23503'; END IF;
   IF p_reversal_date IS NULL OR p_reason IS NULL OR btrim(p_reason)='' OR length(btrim(p_reason))>500 THEN
     RAISE EXCEPTION 'A reversal date and reason of 1-500 characters are required' USING ERRCODE='22023';
   END IF;
@@ -105,6 +107,8 @@ BEGIN
   IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
     RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
   END IF;
+  PERFORM o.id FROM public.organizations o WHERE o.id=p_organization_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Organization not found' USING ERRCODE='23503'; END IF;
   SELECT p.* INTO v_payment FROM public.payments p
    WHERE p.organization_id=p_organization_id AND p.id=p_payment_id FOR UPDATE;
   IF NOT FOUND OR v_payment.status<>'posted' OR v_payment.reversal_journal_entry_id IS NOT NULL THEN
@@ -143,6 +147,8 @@ BEGIN
   IF v_user_id IS NULL OR NOT (private.is_org_member(p_organization_id) OR private.is_org_creator(p_organization_id)) THEN
     RAISE EXCEPTION 'Not authorized for this organization' USING ERRCODE='42501';
   END IF;
+  PERFORM o.id FROM public.organizations o WHERE o.id=p_organization_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Organization not found' USING ERRCODE='23503'; END IF;
   SELECT e.* INTO v_expense FROM public.expenses e
    WHERE e.organization_id=p_organization_id AND e.id=p_expense_id FOR UPDATE;
   IF NOT FOUND OR v_expense.status<>'posted' OR v_expense.reversal_journal_entry_id IS NOT NULL THEN
