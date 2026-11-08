@@ -1,4 +1,4 @@
--- ZERO ERP V1: return-document reversals and SECURITY INVOKER API facade.
+-- ZERO ERP V1: source-aware purchase-return and sales-return reversals.
 -- Source-document reversal updates both accounting and inventory atomically.
 BEGIN;
 
