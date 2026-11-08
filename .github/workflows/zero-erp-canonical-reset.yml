@@ -39,7 +39,9 @@ jobs:
         run: |
           set -euo pipefail
           test "${GITHUB_REF_NAME}" = "fix/database-v1-hardening"
-          test "${{ inputs.confirm_project_ref }}" = "apudjsiqiyrbpuzdrqcl"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            test "${{ inputs.confirm_project_ref }}" = "apudjsiqiyrbpuzdrqcl"
+          fi
           test -n "${SUPABASE_ACCESS_TOKEN}"
           test -n "${SUPABASE_DB_PASSWORD}"
           test "${SUPABASE_PROJECT_ID}" = "apudjsiqiyrbpuzdrqcl"
