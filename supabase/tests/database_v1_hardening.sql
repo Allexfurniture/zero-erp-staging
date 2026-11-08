@@ -21,8 +21,10 @@ BEGIN
      OR to_regprocedure('public.post_sales(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_purchase_return(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_sales_return(uuid,uuid)') IS NULL
-     OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Purchase, sales, return and inventory-adjustment RPCs must be installed';
+     OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL
+     OR to_regprocedure('public.post_payment(uuid,uuid)') IS NULL
+     OR to_regclass('public.opening_balance_items') IS NULL THEN
+    RAISE EXCEPTION 'Purchase, sales, returns, payment and inventory-adjustment workflows must be installed';
   END IF;
 
   IF to_regprocedure('private.enforce_product_identity_immutable()') IS NULL
@@ -37,6 +39,15 @@ BEGIN
   SELECT pg_get_functiondef('private.sales_net_lines(uuid,uuid)'::regprocedure) INTO v_def;
   IF position('discount_units' IN v_def)=0 THEN
     RAISE EXCEPTION 'Sales discount allocation must use exact currency units';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+     WHERE tgrelid='public.journal_entries'::regclass
+       AND tgname='journal_entries_materialize_opening_balances'
+       AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'Opening receivable/payable subledger materialization trigger is missing';
   END IF;
 
   IF NOT EXISTS (
