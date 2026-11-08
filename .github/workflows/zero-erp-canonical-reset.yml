@@ -1,6 +1,11 @@
 name: ZERO ERP canonical staging reset
 
 on:
+  push:
+    branches:
+      - fix/database-v1-hardening
+    paths:
+      - .github/workflows/zero-erp-canonical-reset.yml
   workflow_dispatch:
     inputs:
       confirm_project_ref:
