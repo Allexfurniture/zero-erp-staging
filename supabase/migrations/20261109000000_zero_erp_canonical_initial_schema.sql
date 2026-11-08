@@ -5395,7 +5395,7 @@ GRANT USAGE ON SCHEMA private TO authenticated;
 REVOKE USAGE ON SCHEMA private FROM anon;
 
 DO $secure_facade$
-DECLARE r record; v_args text; v_result text; v_call text; v_sql text; v_sig text; i integer;
+DECLARE r record; v_args text; v_result text; v_call text; v_sql text; i integer;
 BEGIN
   FOR r IN
     SELECT p.oid,p.proname,p.pronargs,p.oid::regprocedure::text signature
