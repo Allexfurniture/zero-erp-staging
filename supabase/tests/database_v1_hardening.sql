@@ -22,6 +22,15 @@ BEGIN
     RAISE EXCEPTION 'Purchase and sales posting RPCs must be installed';
   END IF;
 
+  SELECT pg_get_functiondef('private.purchase_net_lines(uuid,uuid)'::regprocedure) INTO v_def;
+  IF position('discount_units' IN v_def)=0 THEN
+    RAISE EXCEPTION 'Purchase discount allocation must use exact currency units';
+  END IF;
+  SELECT pg_get_functiondef('private.sales_net_lines(uuid,uuid)'::regprocedure) INTO v_def;
+  IF position('discount_units' IN v_def)=0 THEN
+    RAISE EXCEPTION 'Sales discount allocation must use exact currency units';
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
      WHERE table_schema='public' AND table_name='organizations' AND column_name='owner_user_id'
@@ -167,6 +176,7 @@ DECLARE
   v_supplier uuid:=gen_random_uuid();
   v_customer uuid:=gen_random_uuid();
   v_product uuid:=gen_random_uuid();
+  v_precision_product uuid:=gen_random_uuid();
   v_opening uuid:=gen_random_uuid();
   v_purchase uuid:=gen_random_uuid();
   v_purchase_journal uuid;
@@ -177,6 +187,9 @@ DECLARE
   v_qty numeric;
   v_value numeric;
   v_cogs_total numeric;
+  v_precision_qty numeric(20,6):=1.1234567::numeric(20,6);
+  v_precision_cost numeric(20,6):=2.1234567::numeric(20,6);
+  v_precision_value numeric(20,4);
 BEGIN
   INSERT INTO auth.users(id,aud,role,email,encrypted_password,raw_app_meta_data,raw_user_meta_data,email_confirmed_at,created_at,updated_at)
   VALUES(v_user,'authenticated','authenticated','zero-workflow-'||v_user::text||'@example.invalid','','{}','{}',now(),now(),now());
@@ -192,14 +205,28 @@ BEGIN
   SELECT id INTO v_revenue FROM public.accounts WHERE organization_id=v_org AND code='4100';
   SELECT id INTO v_cogs FROM public.accounts WHERE organization_id=v_org AND code='5100';
 
-  INSERT INTO public.journal_entries(id,organization_id,entry_date,entry_type,status,description,created_by)
-  VALUES(v_opening,v_org,current_date,'opening_balance','draft','Opening balances',v_user);
-  INSERT INTO public.account_transactions(organization_id,journal_entry_id,account_id,line_number,debit,credit,created_by)
-  VALUES(v_org,v_opening,v_cash,1,100,0,v_user),(v_org,v_opening,v_equity,2,0,100,v_user);
-  PERFORM public.complete_organization_setup(v_org,'[]'::jsonb,true);
-
   INSERT INTO public.units_of_measure(id,organization_id,name,status,created_by)
   VALUES(v_uom,v_org,'Piece','active',v_user);
+  INSERT INTO public.products(id,organization_id,code,name,unit_id,inventory_account_id,sales_account_id,cogs_account_id,status,created_by)
+  VALUES(v_precision_product,v_org,private.allocate_document_number(v_org,'products'),'Precision Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user);
+
+  v_precision_value:=round(v_precision_qty*v_precision_cost,4);
+  INSERT INTO public.journal_entries(id,organization_id,entry_date,entry_type,status,description,created_by)
+  VALUES(v_opening,v_org,current_date,'opening_balance','draft','Opening inventory precision test',v_user);
+  INSERT INTO public.account_transactions(organization_id,journal_entry_id,account_id,line_number,debit,credit,created_by)
+  VALUES(v_org,v_opening,v_inventory,1,v_precision_value,0,v_user),(v_org,v_opening,v_equity,2,0,v_precision_value,v_user);
+  PERFORM public.complete_organization_setup(
+    v_org,
+    jsonb_build_array(jsonb_build_object('product_id',v_precision_product,'quantity',1.1234567,'unit_cost',2.1234567)),
+    false
+  );
+  IF NOT EXISTS(
+    SELECT 1 FROM public.inventory_balances
+     WHERE organization_id=v_org AND product_id=v_precision_product
+       AND quantity=v_precision_qty AND inventory_value=v_precision_value
+  ) THEN
+    RAISE EXCEPTION 'Opening inventory precision was not normalized consistently';
+  END IF;
   INSERT INTO public.contacts(id,organization_id,code,name,status,created_by)
   VALUES
     (v_supplier,v_org,private.allocate_document_number(v_org,'contacts'),'Smoke Supplier','active',v_user),
