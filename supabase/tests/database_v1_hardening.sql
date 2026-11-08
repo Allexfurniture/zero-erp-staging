@@ -520,6 +520,10 @@ DECLARE
   v_member uuid:=gen_random_uuid();
   v_org_a uuid;
   v_org_b uuid;
+  v_contact uuid:=gen_random_uuid();
+  v_opening_journal uuid:=gen_random_uuid();
+  v_ar uuid;
+  v_equity uuid;
 BEGIN
   INSERT INTO auth.users(id,aud,role,email,encrypted_password,raw_app_meta_data,raw_user_meta_data,email_confirmed_at,created_at,updated_at)
   VALUES
@@ -531,6 +535,18 @@ BEGIN
   v_org_b:=public.create_organization('ZERO ERP RLS private organization');
   INSERT INTO public.organization_users(organization_id,user_id,status,created_by)
   VALUES(v_org_a,v_member,'active',v_owner);
+
+  SELECT id INTO v_ar FROM public.accounts WHERE organization_id=v_org_a AND code='1130';
+  SELECT id INTO v_equity FROM public.accounts WHERE organization_id=v_org_a AND code='3200';
+  INSERT INTO public.contacts(id,organization_id,code,name,status,created_by)
+  VALUES(v_contact,v_org_a,'RLS-OPEN-AR','RLS opening customer','active',v_owner);
+  INSERT INTO public.journal_entries(id,organization_id,entry_date,entry_type,status,description,created_by)
+  VALUES(v_opening_journal,v_org_a,current_date,'opening_balance','draft','RLS opening receivable',v_owner);
+  INSERT INTO public.account_transactions(organization_id,journal_entry_id,account_id,line_number,debit,credit,contact_id,created_by)
+  VALUES(v_org_a,v_opening_journal,v_ar,1,50,0,v_contact,v_owner),
+        (v_org_a,v_opening_journal,v_equity,2,0,50,NULL,v_owner);
+  PERFORM public.complete_organization_setup(v_org_a,'[]'::jsonb,true);
+
   PERFORM set_config('zero_erp.test_org_a',v_org_a::text,true);
   PERFORM set_config('zero_erp.test_org_b',v_org_b::text,true);
   PERFORM set_config('request.jwt.claim.sub',v_member::text,true);
@@ -558,6 +574,26 @@ BEGIN
   IF EXISTS(SELECT 1 FROM public.accounts WHERE organization_id=v_org_b) THEN
     RAISE EXCEPTION 'Cross-tenant accounts leaked';
   END IF;
+  IF NOT EXISTS(SELECT 1 FROM public.opening_balance_items WHERE organization_id=v_org_a) THEN
+    RAISE EXCEPTION 'Member cannot read opening receivable/payable subledger';
+  END IF;
+  IF EXISTS(SELECT 1 FROM public.opening_balance_items WHERE organization_id=v_org_b) THEN
+    RAISE EXCEPTION 'Cross-tenant opening balance subledger leaked';
+  END IF;
+
+  v_blocked:=false;
+  BEGIN
+    INSERT INTO public.opening_balance_items(
+      organization_id,opening_journal_entry_id,opening_journal_line_id,account_id,contact_id,
+      balance_type,opening_date,original_amount
+    )
+    SELECT organization_id,opening_journal_entry_id,opening_journal_line_id,account_id,contact_id,
+           balance_type,opening_date,original_amount
+      FROM public.opening_balance_items WHERE organization_id=v_org_a LIMIT 1;
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_blocked:=true;
+  END;
+  IF NOT v_blocked THEN RAISE EXCEPTION 'Ordinary member could insert opening subledger rows'; END IF;
 
   INSERT INTO public.contacts(organization_id,code,name,status)
   VALUES(v_org_a,'MEMBER-TEST','Member contact','active');
