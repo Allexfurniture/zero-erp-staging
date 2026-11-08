@@ -1,14 +1,31 @@
+-- ZERO ERP canonical initial database schema
+-- Fresh, empty dedicated ZERO ERP Supabase project only.
+-- Reconcile migration history and compare schemas before any existing-database deployment.
+-- Supabase-managed auth/storage schemas and environment secrets are not included.
+--
+-- EXECUTION ORDER
+-- 01-02  Core tables, constraints and tenant-safe relationships
+-- 03-04  RLS policies and private security helpers
+-- 05-09  Audit, numbering, defaults, provisioning and workflow guardrails
+-- 10-11  Sequence permissions and organization tenant scope
+-- 12-18  Purchase, sales, returns, inventory, payments and expenses
+-- 19-21  Opening balances, control accounts and immutability
+-- 22-24  Reversals, private implementations and RPC security facades
+-- 25     Return-source integrity
+--
+-- Ordered function revisions are retained where later definitions harden earlier behavior.
+
 -- ZERO ERP canonical initial database schema (squashed migration)
 -- Intended for a NEW, EMPTY dedicated ZERO ERP Supabase database only.
 -- Do not apply to an existing database or production without migration-history
 -- reconciliation and a schema diff. Does not include Supabase-managed auth/storage
 -- schemas or environment-specific secrets.
 
--- SOURCE MIGRATION: 20261107143935_initial_database_schema.sql
+-- 01. CORE TABLES AND INITIAL SCHEMA
 
 BEGIN;
 
--- REPLAYED SOURCE: 20261107135206_zero_erp_v1_schema.sql
+-- 01.1. Core table definitions
 
 CREATE TABLE public.organizations (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -458,7 +475,7 @@ CREATE TABLE public.payment_allocations (
   updated_at timestamp with time zone NOT NULL DEFAULT now()
 );
 
--- REPLAYED SOURCE: 20261107140952_zero_erp_v1_integrity_foundation.sql
+-- 02. CONSTRAINTS AND TENANT-SAFE RELATIONSHIPS
 
 DO $$ DECLARE t text; has_col boolean; BEGIN FOREACH t IN ARRAY ARRAY['organizations','organization_users','accounts','units_of_measure','contacts','products','expense_categories','number_sequences','journal_entries','account_transactions','inventory_transactions','inventory_balances','purchase','purchase_items','purchase_returns','purchase_return_items','sales','sales_items','sales_returns','sales_return_items','expenses','payments','payment_allocations'] LOOP EXECUTE format('ALTER TABLE public.%I ALTER COLUMN id SET DEFAULT gen_random_uuid()',t); SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=t AND column_name='created_at') INTO has_col; IF has_col THEN EXECUTE format('ALTER TABLE public.%I ALTER COLUMN created_at SET DEFAULT now()',t); EXECUTE format('ALTER TABLE public.%I ALTER COLUMN created_at SET NOT NULL',t); END IF; SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=t AND column_name='updated_at') INTO has_col; IF has_col THEN EXECUTE format('ALTER TABLE public.%I ALTER COLUMN updated_at SET DEFAULT now()',t); EXECUTE format('ALTER TABLE public.%I ALTER COLUMN updated_at SET NOT NULL',t); END IF; END LOOP; END $$;
 ALTER TABLE public.account_transactions ADD CONSTRAINT account_transactions_pkey PRIMARY KEY (id);
@@ -620,7 +637,7 @@ CREATE UNIQUE INDEX sales_return_items_line_uidx ON public.sales_return_items US
 CREATE UNIQUE INDEX sales_returns_code_uidx ON public.sales_returns USING btree (organization_id, code) WHERE (code IS NOT NULL);
 CREATE UNIQUE INDEX units_name_ci_uidx ON public.units_of_measure USING btree (organization_id, lower(name));
 
--- REPLAYED SOURCE: 20261107141128_zero_erp_v1_rls_security.sql
+-- 03. ROW-LEVEL SECURITY POLICIES
 
 CREATE OR REPLACE FUNCTION public.is_org_member(p_organization_id uuid)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = ''
@@ -677,7 +694,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 
--- REPLAYED SOURCE: 20261107141158_zero_erp_v1_private_security_helpers.sql
+-- 04. PRIVATE SECURITY HELPERS
 
 CREATE SCHEMA IF NOT EXISTS private;
 REVOKE ALL ON SCHEMA private FROM PUBLIC, anon;
@@ -687,7 +704,7 @@ ALTER FUNCTION public.is_org_creator(uuid) SET SCHEMA private;
 GRANT EXECUTE ON FUNCTION private.is_org_member(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.is_org_creator(uuid) TO authenticated, service_role;
 
--- REPLAYED SOURCE: 20261107141326_zero_erp_v1_audit_and_sequences.sql
+-- 05. AUDIT FIELDS, NUMBERING AND ORGANIZATION PROVISIONING
 
 CREATE OR REPLACE FUNCTION private.apply_audit_fields()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
@@ -739,7 +756,7 @@ REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.apply_audit_fields() TO authenticated, service_role;
 
--- REPLAYED SOURCE: 20261107141347_fix_document_number_overflow.sql
+-- 05.1. Document-number overflow protection
 CREATE OR REPLACE FUNCTION public.next_document_number(p_organization_id uuid,p_document_type text)
 RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = ''
 AS $$
@@ -763,7 +780,7 @@ $$;
 REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO authenticated, service_role;
 
--- REPLAYED SOURCE: 20261107141508_zero_erp_v1_fk_indexes_and_policy_tuning.sql
+-- 06. FOREIGN-KEY INDEXES AND POLICY TUNING
 
 DO $$
 DECLARE r record; v_index_name text; v_columns text;
@@ -806,7 +823,7 @@ CREATE POLICY inventory_transactions_member_select ON public.inventory_transacti
 CREATE POLICY inventory_transactions_member_insert ON public.inventory_transactions
  FOR INSERT TO authenticated WITH CHECK (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 
--- REPLAYED SOURCE: 20261107141553_harden_audit_metadata.sql
+-- 07. AUDIT METADATA PROTECTION
 CREATE OR REPLACE FUNCTION private.apply_audit_fields()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -836,7 +853,7 @@ DROP TRIGGER IF EXISTS inventory_transactions_audit_fields ON public.inventory_t
 CREATE TRIGGER inventory_transactions_audit_fields BEFORE INSERT ON public.inventory_transactions
  FOR EACH ROW EXECUTE FUNCTION private.apply_audit_fields();
 
--- REPLAYED SOURCE: 20261107141702_zero_erp_v1_workflow_guardrails.sql
+-- 08. WORKFLOW AND DRAFT-INTEGRITY GUARDRAILS
 
 CREATE OR REPLACE FUNCTION private.enforce_draft_document()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
@@ -928,7 +945,7 @@ DROP POLICY inventory_balances_member_all ON public.inventory_balances;
 CREATE POLICY inventory_balances_member_select ON public.inventory_balances
  FOR SELECT TO authenticated USING (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 
--- REPLAYED SOURCE: 20261107141715_fix_line_guard_parent_move.sql
+-- 08.1. Parent-document move protection
 CREATE OR REPLACE FUNCTION private.enforce_draft_line()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -958,7 +975,7 @@ BEGIN
 END;
 $$;
 
--- REPLAYED SOURCE: 20261107141727_fix_line_guard_opening_move.sql
+-- 08.2. Opening-journal move protection
 CREATE OR REPLACE FUNCTION private.enforce_draft_line()
 RETURNS trigger LANGUAGE plpgsql SET search_path = ''
 AS $$
@@ -994,7 +1011,7 @@ BEGIN
 END;
 $$;
 
--- REPLAYED SOURCE: 20261107142619_zero_erp_v1_accounting_defaults_and_sequences.sql
+-- 09. ACCOUNTING DEFAULTS, SEQUENCES AND ORGANIZATION SETUP
 
 alter table public.number_sequences
   add column increment_by bigint not null default 1;
@@ -1206,7 +1223,7 @@ begin
 end;
 $function$;
 
--- REPLAYED SOURCE: 20261107143146_fix_expense_category_sequence_continuity.sql
+-- 09.1. Expense-category sequence continuity
 
 create or replace function private.allocate_document_number(
   p_organization_id uuid,
@@ -1314,7 +1331,7 @@ $function$;
 comment on column public.number_sequences.document_type is
   'Organization-scoped sequence key. expense_categories uses EXP001..., expenses uses EXP000001...';
 
--- REPLAYED SOURCE: 20261107143455_standardize_all_sequence_rules.sql
+-- 09.2. Standardized sequence allocation
 
 create or replace function private.seed_organization_configuration(p_organization_id uuid)
 returns void
@@ -2222,7 +2239,7 @@ GRANT EXECUTE ON FUNCTION public.post_expense(uuid,uuid) TO authenticated,servic
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108071500_zero_erp_sequence_rpc_hardening.sql
+-- 10. SEQUENCE RPC PERMISSIONS
 
 BEGIN;
 
@@ -2231,7 +2248,7 @@ GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO service_role
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108072000_zero_erp_tenant_scope_and_ownership.sql
+-- 11. ORGANIZATION OWNERSHIP AND TENANT SCOPE
 
 BEGIN;
 
@@ -2399,7 +2416,7 @@ REVOKE ALL ON FUNCTION private.enforce_organization_owner_immutable() FROM PUBLI
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108073000_zero_erp_purchase_sales_posting.sql
+-- 12. PURCHASE AND SALES POSTING
 
 BEGIN;
 
@@ -2956,7 +2973,7 @@ GRANT EXECUTE ON FUNCTION public.post_sales(uuid,uuid) TO authenticated,service_
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108075000_zero_erp_source_document_reversal_guard.sql
+-- 13. SOURCE-DOCUMENT REVERSAL GUARD
 
 BEGIN;
 
@@ -3048,7 +3065,7 @@ GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO a
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108080000_zero_erp_precision_and_discount_allocation.sql
+-- 14. DECIMAL PRECISION AND DISCOUNT ALLOCATION
 
 BEGIN;
 CREATE OR REPLACE FUNCTION public.complete_organization_setup(
@@ -3283,7 +3300,7 @@ REVOKE ALL ON FUNCTION private.sales_net_lines(uuid,uuid) FROM PUBLIC,anon,authe
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108082000_zero_erp_return_posting.sql
+-- 15. PURCHASE AND SALES RETURN POSTING
 
 BEGIN;
 
@@ -3871,7 +3888,7 @@ GRANT EXECUTE ON FUNCTION public.post_sales_return(uuid,uuid) TO authenticated,s
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108083000_zero_erp_master_data_immutability.sql
+-- 16. MASTER-DATA IMMUTABILITY
 
 BEGIN;
 
@@ -3953,7 +3970,7 @@ REVOKE ALL ON FUNCTION private.enforce_used_account_definition_immutable() FROM 
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108084000_zero_erp_inventory_adjustments.sql
+-- 17. INVENTORY ADJUSTMENTS
 
 BEGIN;
 
@@ -4190,7 +4207,7 @@ GRANT EXECUTE ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108090000_zero_erp_payment_posting.sql
+-- 18. PAYMENT POSTING AND ALLOCATION
 
 BEGIN;
 
@@ -4376,7 +4393,7 @@ GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108091000_zero_erp_payment_constraints.sql
+-- 18.1. Payment vocabulary and allocation constraints
 
 BEGIN;
 ALTER TABLE public.payments
@@ -4387,7 +4404,7 @@ CREATE UNIQUE INDEX payment_allocations_one_invoice_per_payment_uidx
   ON public.payment_allocations(organization_id,payment_id,document_type,document_id);
 COMMIT;
 
--- SOURCE MIGRATION: 20261108092000_zero_erp_opening_balance_subledger.sql
+-- 19. OPENING-BALANCE SUBLEDGER
 
 BEGIN;
 
@@ -4656,12 +4673,12 @@ GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108093000_zero_erp_opening_balance_index.sql
+-- 19.1. Opening-balance lookup indexes
 
 CREATE INDEX IF NOT EXISTS opening_balance_items_account_idx
   ON public.opening_balance_items(organization_id,account_id);
 
--- SOURCE MIGRATION: 20261108094000_zero_erp_control_account_contact_rules.sql
+-- 20. CONTROL-ACCOUNT AND CONTACT RULES
 
 BEGIN;
 
@@ -4944,7 +4961,7 @@ $function$;
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108095000_zero_erp_account_document_immutability.sql
+-- 21. ACCOUNT AND DOCUMENT IMMUTABILITY
 
 CREATE OR REPLACE FUNCTION private.enforce_used_account_definition_immutable()
 RETURNS trigger
@@ -4993,7 +5010,7 @@ BEGIN
 END;
 $function$;
 
--- SOURCE MIGRATION: 20261108096000_zero_erp_account_contact_guard_trigger.sql
+-- 21.1. Account contact-dimension guard
 
 DROP TRIGGER IF EXISTS accounts_used_definition_immutable ON public.accounts;
 CREATE TRIGGER accounts_used_definition_immutable
@@ -5001,7 +5018,7 @@ BEFORE UPDATE OF code,account_type,normal_balance,is_control_account,is_postable
 ON public.accounts
 FOR EACH ROW EXECUTE FUNCTION private.enforce_used_account_definition_immutable();
 
--- SOURCE MIGRATION: 20261108097000_zero_erp_payment_expense_reversals.sql
+-- 22. PAYMENT AND EXPENSE REVERSALS
 
 BEGIN;
 
@@ -5177,7 +5194,7 @@ GRANT EXECUTE ON FUNCTION public.reverse_expense(uuid,uuid,date,text) TO authent
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108098000_zero_erp_return_reversals_and_rpc_grants.sql
+-- 23. PURCHASE AND SALES RETURN REVERSALS
 
 BEGIN;
 
@@ -5388,7 +5405,7 @@ GRANT EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) TO au
 
 COMMIT;
 
--- SOURCE MIGRATION: 20261108098100_zero_erp_secure_rpc_facade.sql
+-- 24. PRIVATE WORKFLOW IMPLEMENTATIONS AND PUBLIC RPC FACADES
 
 BEGIN;
 GRANT USAGE ON SCHEMA private TO authenticated;
