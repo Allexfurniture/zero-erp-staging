@@ -125,8 +125,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client
           export PGHOST="db.${SUPABASE_PROJECT_ID}.supabase.co"
           export PGPORT="5432"
           export PGDATABASE="postgres"
