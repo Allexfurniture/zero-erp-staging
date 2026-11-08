@@ -1,11 +1,7 @@
--- ZERO ERP production schema rebuild.
--- Rebuilds only public/private application schemas. Supabase Auth, Storage,
--- Realtime, Vault, and installed extensions are preserved.
--- The current application tables are empty; existing Auth users are retained.
+-- ZERO ERP V1 initial schema bootstrap.
+-- Non-destructive: never drop shared Supabase schemas or existing data.
+-- Apply only to the dedicated ZERO ERP project after verifying its app schema is empty.
 BEGIN;
-DROP SCHEMA IF EXISTS private CASCADE;
-DROP SCHEMA IF EXISTS public CASCADE;
-CREATE SCHEMA public AUTHORIZATION postgres;
 
 -- ===== Replayed: 20261107135206_zero_erp_v1_schema.sql =====
 -- ZERO ERP V1 schema migration
@@ -1798,7 +1794,7 @@ BEGIN
     IF v_row->>'status' IS DISTINCT FROM 'draft' THEN
       RAISE EXCEPTION 'New documents must start in draft status' USING ERRCODE='23514';
     END IF;
-    FOREACH v_field IN ARRAY ARRAY['confirmed_at','confirmed_by','posted_at','posted_by','voided_at','voided_by','void_reason','posted_journal_entry_id','reversal_journal_entry_id','reversed_at','reversed_by','reversal_reason'] LOOP
+    FOREACH v_field IN ARRAY ARRAY['confirmed_at','confirmed_by','posted_at','posted_by','voided_at','voided_by','void_reason','posted_journal_entry_id','reversal_of_id','reversal_journal_entry_id','reversed_at','reversed_by','reversal_reason'] LOOP
       IF v_row ? v_field AND v_row->v_field IS NOT NULL AND v_row->v_field <> 'null'::jsonb THEN
         RAISE EXCEPTION 'Workflow metadata is system-managed: %',v_field USING ERRCODE='23514';
       END IF;
@@ -1820,7 +1816,7 @@ BEGIN
     IF TG_TABLE_NAME='journal_entries' AND v_row->>'entry_type' IS DISTINCT FROM v_old->>'entry_type' THEN
       RAISE EXCEPTION 'Journal entry type is immutable' USING ERRCODE='23514';
     END IF;
-    FOREACH v_field IN ARRAY ARRAY['confirmed_at','confirmed_by','posted_at','posted_by','voided_at','voided_by','void_reason','posted_journal_entry_id','reversal_journal_entry_id','reversed_at','reversed_by','reversal_reason'] LOOP
+    FOREACH v_field IN ARRAY ARRAY['confirmed_at','confirmed_by','posted_at','posted_by','voided_at','voided_by','void_reason','posted_journal_entry_id','reversal_of_id','reversal_journal_entry_id','reversed_at','reversed_by','reversal_reason'] LOOP
       IF v_row ? v_field AND v_row->v_field IS DISTINCT FROM v_old->v_field THEN
         RAISE EXCEPTION 'Workflow metadata is system-managed: %',v_field USING ERRCODE='23514';
       END IF;
@@ -1925,6 +1921,10 @@ BEGIN
   SELECT o.status INTO v_org_status FROM public.organizations o WHERE o.id=p_organization_id;
   IF v_org_status IS NULL OR v_org_status='inactive' THEN
     RAISE EXCEPTION 'Organization is unavailable for number allocation' USING ERRCODE='23514';
+  END IF;
+  IF p_document_type IN ('account_asset','account_liability','account_equity','account_income','account_expense')
+     AND NOT private.is_org_creator(p_organization_id) THEN
+    RAISE EXCEPTION 'Only the organization creator may allocate account codes' USING ERRCODE='42501';
   END IF;
   IF v_org_status='configuring' AND p_document_type NOT IN
     ('account_asset','account_liability','account_equity','account_income','account_expense','contacts','products','expense_categories','journal_entries') THEN
@@ -2070,7 +2070,7 @@ BEGIN
   END IF;
 
   SELECT count(*),count(DISTINCT x.product_id),
-         COALESCE(round(sum(x.quantity*x.unit_cost),4),0)
+         COALESCE(sum(round(x.quantity*x.unit_cost,4)),0)
     INTO v_item_count,v_distinct_products,v_inventory_total
     FROM jsonb_to_recordset(p_inventory_items) AS x(product_id uuid,quantity numeric,unit_cost numeric);
   IF v_item_count<>v_distinct_products THEN
@@ -2177,6 +2177,7 @@ DECLARE
   v_user_id uuid:=auth.uid();
   v_org_status text;
   v_entry public.journal_entries%ROWTYPE;
+  v_original public.journal_entries%ROWTYPE;
   v_line_count bigint;
   v_debit numeric(20,4);
   v_credit numeric(20,4);
@@ -2199,8 +2200,47 @@ BEGIN
   IF v_entry.entry_type='opening_balance' THEN
     RAISE EXCEPTION 'Opening journal entries can only be posted by setup completion' USING ERRCODE='23514';
   END IF;
-  IF v_entry.reversal_of_id IS NOT NULL AND v_entry.entry_type<>'reversal' THEN
-    RAISE EXCEPTION 'Invalid reversal journal metadata' USING ERRCODE='23514';
+  IF v_entry.reversal_of_id IS NOT NULL THEN
+    IF v_entry.entry_type<>'reversal' THEN
+      RAISE EXCEPTION 'Invalid reversal journal metadata' USING ERRCODE='23514';
+    END IF;
+    SELECT j.* INTO v_original
+      FROM public.journal_entries j
+     WHERE j.organization_id=p_organization_id AND j.id=v_entry.reversal_of_id
+     FOR UPDATE;
+    IF NOT FOUND OR v_original.status<>'posted'
+       OR v_original.reversal_of_id IS NOT NULL
+       OR v_original.reversal_journal_entry_id IS NOT NULL THEN
+      RAISE EXCEPTION 'Reversal must reference an unreversed posted original journal' USING ERRCODE='23514';
+    END IF;
+    SELECT count(*) INTO v_invalid
+      FROM (
+        SELECT COALESCE(o.account_id,r.account_id) AS account_id,
+               COALESCE(o.contact_id,r.contact_id) AS contact_id,
+               COALESCE(o.debit,0) AS original_debit,
+               COALESCE(o.credit,0) AS original_credit,
+               COALESCE(r.debit,0) AS reversal_debit,
+               COALESCE(r.credit,0) AS reversal_credit
+          FROM (
+            SELECT t.account_id,t.contact_id,sum(t.debit) AS debit,sum(t.credit) AS credit
+              FROM public.account_transactions t
+             WHERE t.organization_id=p_organization_id AND t.journal_entry_id=v_original.id
+             GROUP BY t.account_id,t.contact_id
+          ) o
+          FULL JOIN (
+            SELECT t.account_id,t.contact_id,sum(t.debit) AS debit,sum(t.credit) AS credit
+              FROM public.account_transactions t
+             WHERE t.organization_id=p_organization_id AND t.journal_entry_id=p_journal_entry_id
+             GROUP BY t.account_id,t.contact_id
+          ) r ON r.account_id=o.account_id AND r.contact_id IS NOT DISTINCT FROM o.contact_id
+      ) x
+     WHERE x.original_debit<>x.reversal_credit
+        OR x.original_credit<>x.reversal_debit;
+    IF v_invalid>0 THEN
+      RAISE EXCEPTION 'Reversal lines must exactly invert the original journal by account and contact' USING ERRCODE='23514';
+    END IF;
+  ELSIF v_entry.entry_type='reversal' THEN
+    RAISE EXCEPTION 'Reversal journal must reference an original journal' USING ERRCODE='23514';
   END IF;
 
   SELECT count(*),COALESCE(sum(t.debit),0),COALESCE(sum(t.credit),0)
@@ -2330,6 +2370,7 @@ DECLARE
   v_expense_account uuid;
   v_credit_account uuid;
   v_credit_code text;
+  v_credit_type text;
   v_journal_id uuid:=gen_random_uuid();
   v_journal_code text;
 BEGIN
@@ -2366,11 +2407,14 @@ BEGIN
      WHERE a.organization_id=p_organization_id AND a.code='1110';
   END IF;
 
-  SELECT a.code INTO v_credit_code FROM public.accounts a
+  SELECT a.code,a.account_type INTO v_credit_code,v_credit_type FROM public.accounts a
    WHERE a.organization_id=p_organization_id AND a.id=v_credit_account
      AND a.status='active' AND a.is_postable;
   IF v_credit_code IS NULL THEN
     RAISE EXCEPTION 'Expense settlement account is missing, inactive or not postable' USING ERRCODE='23514';
+  END IF;
+  IF v_credit_type NOT IN ('asset','liability') THEN
+    RAISE EXCEPTION 'Expense settlement account must be an asset (cash/bank) or liability (payable)' USING ERRCODE='23514';
   END IF;
   IF v_credit_code='2110' AND v_expense.contact_id IS NULL THEN
     RAISE EXCEPTION 'Supplier/contact is required when expense is credited to Accounts Payable' USING ERRCODE='23514';
