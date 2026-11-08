@@ -105,6 +105,10 @@ BEGIN
   INSERT INTO public.payment_allocations(organization_id,payment_id,document_type,document_id,allocated_amount,created_by)
   VALUES(org,payment_id,'purchase',purchase_id,1000,u);
   PERFORM public.post_payment(org,payment_id);
+  PERFORM public.reverse_payment(org,payment_id,current_date,'Acceptance test supplier payment reversal');
+  IF NOT EXISTS(SELECT 1 FROM public.payments WHERE id=payment_id AND status='reversed' AND reversal_journal_entry_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'Supplier payment reversal did not finalize';
+  END IF;
 
   -- Credit sale and partial customer receipt.
   INSERT INTO public.sales(id,organization_id,customer_id,invoice_date,status,subtotal,discount_amount,total_amount,receivable_account_id,created_by)
@@ -118,6 +122,10 @@ BEGIN
   INSERT INTO public.payment_allocations(organization_id,payment_id,document_type,document_id,allocated_amount,created_by)
   VALUES(org,receipt_id,'sales',sale_id,1000,u);
   PERFORM public.post_payment(org,receipt_id);
+  PERFORM public.reverse_payment(org,receipt_id,current_date,'Acceptance test customer receipt reversal');
+  IF NOT EXISTS(SELECT 1 FROM public.payments WHERE id=receipt_id AND status='reversed' AND reversal_journal_entry_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'Customer receipt reversal did not finalize';
+  END IF;
 
   -- Excess settlement against an opening receivable must be rejected.
   DECLARE v_bad_payment uuid:=gen_random_uuid();
@@ -152,6 +160,10 @@ BEGIN
   INSERT INTO public.expenses(id,organization_id,expense_category_id,expense_date,amount,description,status,created_by)
   VALUES(expense_id,org,cat,current_date,150,'Office operating expense','draft',u);
   PERFORM public.post_expense(org,expense_id);
+  PERFORM public.reverse_expense(org,expense_id,current_date,'Acceptance test expense reversal');
+  IF NOT EXISTS(SELECT 1 FROM public.expenses WHERE id=expense_id AND status='reversed' AND reversal_journal_entry_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'Expense reversal did not finalize';
+  END IF;
 
   PERFORM public.post_inventory_adjustment(
     org,current_date,'Physical count adjustment',
