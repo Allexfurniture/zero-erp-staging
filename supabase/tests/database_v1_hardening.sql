@@ -52,6 +52,16 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
+     WHERE table_schema='public' AND table_name='accounts' AND column_name='requires_contact'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema='private' AND table_name='default_account_templates' AND column_name='requires_contact'
+  ) THEN
+    RAISE EXCEPTION 'Control accounts must declare whether a contact is required';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
      WHERE table_schema='public' AND table_name='organizations' AND column_name='owner_user_id'
   ) THEN
     RAISE EXCEPTION 'Organizations must have an explicit owner_user_id';
