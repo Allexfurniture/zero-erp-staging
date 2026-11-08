@@ -125,7 +125,7 @@ BEGIN
   BEGIN
     UPDATE public.contacts SET organization_id=v_second_org WHERE id=v_contact;
     RAISE EXCEPTION 'Tenant scope mutation was not rejected';
-  EXCEPTION WHEN check_violation THEN
+  EXCEPTION WHEN SQLSTATE '22000' THEN
     NULL;
   END;
 
