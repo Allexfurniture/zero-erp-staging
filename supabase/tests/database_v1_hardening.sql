@@ -24,6 +24,11 @@ BEGIN
     RAISE EXCEPTION 'Purchase, sales and return posting RPCs must be installed';
   END IF;
 
+  IF to_regprocedure('private.enforce_product_identity_immutable()') IS NULL
+     OR to_regprocedure('private.enforce_used_account_definition_immutable()') IS NULL THEN
+    RAISE EXCEPTION 'Used product and account definitions must be protected';
+  END IF;
+
   SELECT pg_get_functiondef('private.purchase_net_lines(uuid,uuid)'::regprocedure) INTO v_def;
   IF position('discount_units' IN v_def)=0 THEN
     RAISE EXCEPTION 'Purchase discount allocation must use exact currency units';
@@ -248,6 +253,18 @@ BEGIN
   IF NOT EXISTS(SELECT 1 FROM public.purchase WHERE id=v_purchase AND status='posted' AND posted_journal_entry_id=v_purchase_journal) THEN
     RAISE EXCEPTION 'Purchase posting did not finalize source document';
   END IF;
+
+  v_failed:=false;
+  BEGIN
+    UPDATE public.products SET sales_account_id=v_revenue
+     WHERE organization_id=v_org AND id=v_product;
+    -- Same-value update is harmless; try a real mapping change next.
+    UPDATE public.products SET sales_account_id=(SELECT id FROM public.accounts WHERE organization_id=v_org AND code='4200')
+     WHERE organization_id=v_org AND id=v_product;
+  EXCEPTION WHEN check_violation THEN
+    v_failed:=true;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'Product account mapping was mutable after inventory posting'; END IF;
 
   v_failed:=false;
   BEGIN
