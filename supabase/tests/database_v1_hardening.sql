@@ -76,3 +76,65 @@ END;
 $tests$;
 
 SELECT 'ZERO ERP V1 hardening smoke tests passed' AS result;
+
+-- End-to-end rollback fixture: organization provisioning, setup completion,
+-- explicit ownership, and tenant-scope immutability.
+BEGIN;
+DO $integration$
+DECLARE
+  v_user uuid := gen_random_uuid();
+  v_org uuid;
+  v_second_org uuid;
+  v_cash uuid;
+  v_equity uuid;
+  v_journal uuid := gen_random_uuid();
+  v_contact uuid := gen_random_uuid();
+BEGIN
+  INSERT INTO auth.users(id,aud,role,email,encrypted_password,raw_app_meta_data,raw_user_meta_data,email_confirmed_at,created_at,updated_at)
+  VALUES (v_user,'authenticated','authenticated','zero-erp-test-'||v_user::text||'@example.invalid','', '{}'::jsonb,'{}'::jsonb,now(),now(),now());
+
+  PERFORM set_config('request.jwt.claim.sub',v_user::text,true);
+  PERFORM set_config('request.jwt.claims',jsonb_build_object('sub',v_user::text,'role','authenticated')::text,true);
+
+  v_org := public.create_organization('ZERO ERP integration rollback test');
+  v_second_org := public.create_organization('ZERO ERP second rollback test');
+
+  IF NOT EXISTS (SELECT 1 FROM public.organizations WHERE id=v_org AND owner_user_id=v_user) THEN
+    RAISE EXCEPTION 'Organization owner assignment failed';
+  END IF;
+
+  SELECT id INTO v_cash FROM public.accounts WHERE organization_id=v_org AND code='1110';
+  SELECT id INTO v_equity FROM public.accounts WHERE organization_id=v_org AND code='3100';
+  IF v_cash IS NULL OR v_equity IS NULL THEN
+    RAISE EXCEPTION 'Default chart of accounts is incomplete';
+  END IF;
+
+  INSERT INTO public.journal_entries(id,organization_id,entry_date,entry_type,status,description,created_by)
+  VALUES(v_journal,v_org,current_date,'opening_balance','draft','Integration opening journal',v_user);
+  INSERT INTO public.account_transactions(organization_id,journal_entry_id,account_id,line_number,debit,credit,created_by)
+  VALUES (v_org,v_journal,v_cash,1,100,0,v_user),(v_org,v_journal,v_equity,2,0,100,v_user);
+
+  PERFORM public.complete_organization_setup(v_org,'[]'::jsonb,true);
+  IF NOT EXISTS (SELECT 1 FROM public.organizations WHERE id=v_org AND status='active') THEN
+    RAISE EXCEPTION 'Organization setup completion failed';
+  END IF;
+
+  INSERT INTO public.contacts(id,organization_id,name,status,created_by)
+  VALUES(v_contact,v_org,'Tenant scope test','active',v_user);
+
+  BEGIN
+    UPDATE public.contacts SET organization_id=v_second_org WHERE id=v_contact;
+    RAISE EXCEPTION 'Tenant scope mutation was not rejected';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  BEGIN
+    UPDATE public.organizations SET owner_user_id=gen_random_uuid() WHERE id=v_org;
+    RAISE EXCEPTION 'Organization ownership mutation was not rejected';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+END;
+$integration$;
+ROLLBACK;
