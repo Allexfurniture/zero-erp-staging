@@ -159,7 +159,7 @@ BEGIN
    WHERE i.organization_id=p_organization_id AND i.purchase_id=p_purchase_id
      AND (p.id IS NULL OR p.status IS NOT TRUE OR a.id IS NULL
        OR a.account_type<>'asset' OR a.status<>'active' OR NOT a.is_postable
-       OR a.is_control_account);
+       );
   IF v_invalid>0 THEN
     RAISE EXCEPTION 'Every purchase product must be active and mapped to an active postable inventory asset account' USING ERRCODE='23514';
   END IF;
@@ -356,7 +356,7 @@ BEGIN
       ON ca.organization_id=p.organization_id AND ca.id=p.cogs_account_id
    WHERE i.organization_id=p_organization_id AND i.sales_id=p_sales_id
      AND (p.id IS NULL OR p.status IS NOT TRUE
-       OR ia.id IS NULL OR ia.account_type<>'asset' OR ia.status<>'active' OR NOT ia.is_postable OR ia.is_control_account
+       OR ia.id IS NULL OR ia.account_type<>'asset' OR ia.status<>'active' OR NOT ia.is_postable 
        OR ra.id IS NULL OR ra.account_type<>'income' OR ra.status<>'active' OR NOT ra.is_postable
        OR ca.id IS NULL OR ca.account_type<>'expense' OR ca.status<>'active' OR NOT ca.is_postable);
   IF v_invalid>0 THEN
