@@ -20,8 +20,9 @@ BEGIN
   IF to_regprocedure('public.post_purchase(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_sales(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_purchase_return(uuid,uuid)') IS NULL
-     OR to_regprocedure('public.post_sales_return(uuid,uuid)') IS NULL THEN
-    RAISE EXCEPTION 'Purchase, sales and return posting RPCs must be installed';
+     OR to_regprocedure('public.post_sales_return(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL THEN
+    RAISE EXCEPTION 'Purchase, sales, return and inventory-adjustment RPCs must be installed';
   END IF;
 
   IF to_regprocedure('private.enforce_product_identity_immutable()') IS NULL
@@ -179,17 +180,21 @@ DECLARE
   v_receivable uuid;
   v_revenue uuid;
   v_cogs uuid;
+  v_gain uuid;
+  v_loss uuid;
   v_uom uuid:=gen_random_uuid();
   v_supplier uuid:=gen_random_uuid();
   v_customer uuid:=gen_random_uuid();
   v_product uuid:=gen_random_uuid();
   v_other_product uuid:=gen_random_uuid();
+  v_adjust_product uuid:=gen_random_uuid();
   v_precision_product uuid:=gen_random_uuid();
   v_opening uuid:=gen_random_uuid();
   v_purchase uuid:=gen_random_uuid();
   v_purchase_journal uuid;
   v_sale uuid:=gen_random_uuid();
   v_sales_journal uuid;
+  v_adjustment_journal uuid;
   v_overstock_sale uuid:=gen_random_uuid();
   v_failed boolean:=false;
   v_qty numeric;
@@ -212,6 +217,8 @@ BEGIN
   SELECT id INTO v_receivable FROM public.accounts WHERE organization_id=v_org AND code='1130';
   SELECT id INTO v_revenue FROM public.accounts WHERE organization_id=v_org AND code='4100';
   SELECT id INTO v_cogs FROM public.accounts WHERE organization_id=v_org AND code='5100';
+  SELECT id INTO v_gain FROM public.accounts WHERE organization_id=v_org AND code='4200';
+  SELECT id INTO v_loss FROM public.accounts WHERE organization_id=v_org AND code='5200';
 
   INSERT INTO public.units_of_measure(id,organization_id,name,status,created_by)
   VALUES(v_uom,v_org,'Piece','active',v_user);
@@ -242,7 +249,8 @@ BEGIN
   INSERT INTO public.products(id,organization_id,code,name,unit_id,inventory_account_id,sales_account_id,cogs_account_id,status,created_by)
   VALUES
     (v_product,v_org,private.allocate_document_number(v_org,'products'),'Smoke Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user),
-    (v_other_product,v_org,private.allocate_document_number(v_org,'products'),'Other Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user);
+    (v_other_product,v_org,private.allocate_document_number(v_org,'products'),'Other Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user),
+    (v_adjust_product,v_org,private.allocate_document_number(v_org,'products'),'Adjustment Product',v_uom,v_inventory,v_revenue,v_cogs,true,v_user);
 
   INSERT INTO public.purchase(id,organization_id,supplier_id,invoice_date,status,subtotal,discount_amount,total_amount,payable_account_id,created_by)
   VALUES(v_purchase,v_org,v_supplier,current_date,'draft',100,10,90,v_payable,v_user);
@@ -378,6 +386,31 @@ BEGIN
     SELECT cogs_total INTO v_cogs_total FROM public.sales_return_items WHERE organization_id=v_org AND sales_return_id=v_sales_return;
     IF v_cogs_total<>9 THEN RAISE EXCEPTION 'Sales return COGS restoration incorrect: %',v_cogs_total; END IF;
   END;
+
+  v_adjustment_journal:=public.post_inventory_adjustment(
+    v_org,current_date,'Mixed inventory adjustment',
+    jsonb_build_array(
+      jsonb_build_object('product_id',v_adjust_product,'direction','in','quantity',5,'unit_cost',3),
+      jsonb_build_object('product_id',v_product,'direction','out','quantity',1)
+    ),
+    v_gain,v_loss
+  );
+  SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances
+   WHERE organization_id=v_org AND product_id=v_adjust_product;
+  IF v_qty<>5 OR v_value<>15 THEN
+    RAISE EXCEPTION 'Inventory increase adjustment incorrect: quantity %, value %',v_qty,v_value;
+  END IF;
+  SELECT quantity,inventory_value INTO v_qty,v_value FROM public.inventory_balances
+   WHERE organization_id=v_org AND product_id=v_product;
+  IF v_qty<>4 OR v_value<>36 THEN
+    RAISE EXCEPTION 'Inventory decrease adjustment incorrect: quantity %, value %',v_qty,v_value;
+  END IF;
+  IF EXISTS(
+    SELECT 1 FROM public.account_transactions
+     WHERE organization_id=v_org AND journal_entry_id=v_adjustment_journal
+     GROUP BY journal_entry_id
+    HAVING round(sum(debit),4)<>round(sum(credit),4)
+  ) THEN RAISE EXCEPTION 'Inventory adjustment journal is unbalanced'; END IF;
 
   INSERT INTO public.sales(id,organization_id,customer_id,invoice_date,status,subtotal,discount_amount,total_amount,receivable_account_id,created_by)
   VALUES(v_overstock_sale,v_org,v_customer,current_date,'draft',1000,0,1000,v_receivable,v_user);
