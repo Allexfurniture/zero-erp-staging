@@ -1,0 +1,122 @@
+name: ZERO ERP canonical staging reset
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_project_ref:
+        description: "Type the isolated staging project ref exactly: apudjsiqiyrbpuzdrqcl"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zero-erp-canonical-staging-reset
+  cancel-in-progress: false
+
+jobs:
+  canonical-reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: apudjsiqiyrbpuzdrqcl
+    steps:
+      - name: Checkout the approved staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/database-v1-hardening
+          fetch-depth: 0
+
+      - name: Validate target and credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "fix/database-v1-hardening"
+          test "${{ inputs.confirm_project_ref }}" = "apudjsiqiyrbpuzdrqcl"
+          test -n "${SUPABASE_ACCESS_TOKEN}"
+          test -n "${SUPABASE_DB_PASSWORD}"
+          test "${SUPABASE_PROJECT_ID}" = "apudjsiqiyrbpuzdrqcl"
+          echo "Target validated: isolated ZERO ERP staging project only."
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v3
+        with:
+          version: latest
+
+      - name: Create canonical migration using Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_file="supabase/migrations/20261109000000_zero_erp_canonical_initial_schema.sql"
+          test -f "$old_file"
+          mapfile -t existing < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
+          test "${#existing[@]}" -eq 1
+          test "${existing[0]}" = "20261109000000_zero_erp_canonical_initial_schema.sql"
+
+          supabase migration new canonical_zero_initial_erp_database_schema
+          mapfile -t generated < <(find supabase/migrations -maxdepth 1 -type f -name '*_canonical_zero_initial_erp_database_schema.sql' -print)
+          test "${#generated[@]}" -eq 1
+          new_file="${generated[0]}"
+
+          cp "$old_file" "$new_file"
+          test -s "$new_file"
+          cmp -s "$old_file" "$new_file"
+          rm "$old_file"
+
+          mapfile -t remaining < <(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort)
+          test "${#remaining[@]}" -eq 1
+          test "${remaining[0]}" = "$(basename "$new_file")"
+          echo "CANONICAL_MIGRATION_FILE=$new_file" >> "$GITHUB_ENV"
+          echo "Created $new_file; previous migration file removed after byte-for-byte copy."
+
+      - name: Commit the migration-file replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A supabase/migrations
+          git commit -m "chore(db): establish canonical ZERO ERP initial schema"
+          git push origin HEAD:fix/database-v1-hardening
+
+      - name: Link CLI to the isolated Supabase project
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase link --project-ref "$SUPABASE_PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Confirm linked migration target before reset
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase migration list --remote
+
+      - name: Reset isolated staging database and replay canonical migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase db reset --yes --remote --no-seed
+
+      - name: Verify remote migration history
+        shell: bash
+        run: |
+          set -euo pipefail
+          supabase migration list --remote
+
+      - name: Run complete ZERO ERP regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          export PGHOST="db.${SUPABASE_PROJECT_ID}.supabase.co"
+          export PGPORT="5432"
+          export PGDATABASE="postgres"
+          export PGUSER="postgres"
+          export PGPASSWORD="$SUPABASE_DB_PASSWORD"
+          export PGSSLMODE="require"
+          psql -v ON_ERROR_STOP=1 -f supabase/tests/zero_erp_complete_test.sql
+
