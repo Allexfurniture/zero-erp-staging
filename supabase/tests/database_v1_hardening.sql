@@ -42,6 +42,10 @@ BEGIN
     RAISE EXCEPTION 'Expense settlement account type is not validated';
   END IF;
 
+  IF has_function_privilege('authenticated','public.next_document_number(uuid,text)','EXECUTE') THEN
+    RAISE EXCEPTION 'Authenticated users can directly consume document-number sequences';
+  END IF;
+
   SELECT count(*) INTO v_anon_definer_count
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid=p.pronamespace
