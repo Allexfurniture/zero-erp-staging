@@ -23,6 +23,8 @@ BEGIN
      OR to_regprocedure('public.post_sales_return(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_payment(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.reverse_payment(uuid,uuid,date,text)') IS NULL
+     OR to_regprocedure('public.reverse_expense(uuid,uuid,date,text)') IS NULL
      OR to_regclass('public.opening_balance_items') IS NULL THEN
     RAISE EXCEPTION 'Purchase, sales, returns, payment and inventory-adjustment workflows must be installed';
   END IF;
