@@ -9,7 +9,6 @@
 -- Git blob SHA/content as 20261108073000_zero_erp_purchase_sales_posting.sql
 -- and is intentionally not duplicated in this replay.
 
-
 -- ============================================================================
 -- SOURCE MIGRATION: 20261107143935_initial_database_schema.sql
 -- ============================================================================
@@ -24,8 +23,6 @@ BEGIN;
 -- Generated from docs/database/initial-database-schema-v1.sql.
 -- Columns-only baseline: constraints, indexes, RLS policies, triggers, RPCs,
 -- and seed/provisioning logic are intentionally deferred to later migrations.
-
-
 
 -- ZERO ERP Initial Database Schema V1
 -- Column definitions only: 23 retained legacy tables. No organization_setup table.
@@ -641,9 +638,6 @@ CREATE TABLE public.payment_allocations (
   updated_at timestamp with time zone NOT NULL DEFAULT now()
 );
 
-
-
-
 -- ===== Replayed: 20261107140952_zero_erp_v1_integrity_foundation.sql =====
 -- ZERO ERP V1 integrity foundation
 -- Migration equivalent to the integrity foundation applied to zero-erp.
@@ -809,8 +803,6 @@ CREATE UNIQUE INDEX sales_return_items_line_uidx ON public.sales_return_items US
 CREATE UNIQUE INDEX sales_returns_code_uidx ON public.sales_returns USING btree (organization_id, code) WHERE (code IS NOT NULL);
 CREATE UNIQUE INDEX units_name_ci_uidx ON public.units_of_measure USING btree (organization_id, lower(name));
 
-
-
 -- ===== Replayed: 20261107141128_zero_erp_v1_rls_security.sql =====
 -- ZERO ERP V1 row-level security and organization access policies
 -- Active members may operate business records; creator controls organization and system setup.
@@ -870,7 +862,6 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 
-
 -- ===== Replayed: 20261107141158_zero_erp_v1_private_security_helpers.sql =====
 -- Move security-definer RLS helpers outside the exposed Data API schemas.
 
@@ -881,7 +872,6 @@ ALTER FUNCTION public.is_org_member(uuid) SET SCHEMA private;
 ALTER FUNCTION public.is_org_creator(uuid) SET SCHEMA private;
 GRANT EXECUTE ON FUNCTION private.is_org_member(uuid) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.is_org_creator(uuid) TO authenticated, service_role;
-
 
 -- ===== Replayed: 20261107141326_zero_erp_v1_audit_and_sequences.sql =====
 -- ZERO ERP V1 audit fields and atomic document numbering
@@ -935,7 +925,6 @@ $$;
 REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION private.apply_audit_fields() TO authenticated, service_role;
-
 
 -- ===== Replayed: 20261107141347_fix_document_number_overflow.sql =====
 -- Prevent lpad truncation when a sequence number exceeds its configured padding.
@@ -1005,7 +994,6 @@ CREATE POLICY inventory_transactions_member_select ON public.inventory_transacti
  FOR SELECT TO authenticated USING (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 CREATE POLICY inventory_transactions_member_insert ON public.inventory_transactions
  FOR INSERT TO authenticated WITH CHECK (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
-
 
 -- ===== Replayed: 20261107141553_harden_audit_metadata.sql =====
 -- Prevent client spoofing of audit columns and cross-organization row moves.
@@ -1131,7 +1119,6 @@ DROP POLICY inventory_balances_member_all ON public.inventory_balances;
 CREATE POLICY inventory_balances_member_select ON public.inventory_balances
  FOR SELECT TO authenticated USING (private.is_org_member(organization_id) OR private.is_org_creator(organization_id));
 
-
 -- ===== Replayed: 20261107141715_fix_line_guard_parent_move.sql =====
 -- Ensure a draft line cannot be moved away from a non-draft parent document.
 CREATE OR REPLACE FUNCTION private.enforce_draft_line()
@@ -1202,7 +1189,6 @@ $$;
 
 -- ===== Replayed: 20261107142619_zero_erp_v1_accounting_defaults_and_sequences.sql =====
 -- ZERO ERP V1 accounting defaults and immutable sequence configuration.
-
 
 alter table public.number_sequences
   add column increment_by bigint not null default 1;
@@ -1421,12 +1407,8 @@ begin
 end;
 $function$;
 
-
-
-
 -- ===== Replayed: 20261107143146_fix_expense_category_sequence_continuity.sql =====
 -- Correct expense-category numbering: one continuous EXP sequence.
-
 
 create or replace function private.allocate_document_number(
   p_organization_id uuid,
@@ -1534,14 +1516,10 @@ $function$;
 comment on column public.number_sequences.document_type is
   'Organization-scoped sequence key. expense_categories uses EXP001..., expenses uses EXP000001...';
 
-
-
-
 -- ===== Replayed: 20261107143455_standardize_all_sequence_rules.sql =====
 -- Standardize all ZERO ERP sequences on the same counter rule.
 -- Every sequence uses the same allocator, advances by one, and applies its
 -- configured prefix and padding. Only sequence configuration differs.
-
 
 create or replace function private.seed_organization_configuration(p_organization_id uuid)
 returns void
@@ -1609,9 +1587,6 @@ alter table public.number_sequences
 
 comment on column public.number_sequences.increment_by is
   'Standardized sequence rule: always 1. Each document_type has its own counter; prefix and padding are configurable.';
-
-
-
 
 -- Production hardening: secure Data API grants and future object defaults.
 REVOKE ALL ON SCHEMA public FROM PUBLIC, anon;
@@ -1747,7 +1722,6 @@ ALTER TABLE private.default_account_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE private.default_expense_category_templates ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON ALL TABLES IN SCHEMA private FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA private FROM PUBLIC, anon, authenticated;
-
 
 -- ===== Production lifecycle, draft integrity, and controlled ledger writes =====
 
@@ -1949,8 +1923,6 @@ BEGIN
   RETURN private.allocate_document_number(p_organization_id,p_document_type);
 END;
 $function$;
-
-
 
 -- ===== Accounting constraints and atomic Setup Wizard completion =====
 
@@ -2172,8 +2144,6 @@ $function$;
 REVOKE ALL ON FUNCTION public.complete_organization_setup(uuid,jsonb,boolean) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.complete_organization_setup(uuid,jsonb,boolean) TO authenticated,service_role;
 
-
-
 -- ===== Controlled journal posting and reversal RPCs =====
 
 CREATE UNIQUE INDEX IF NOT EXISTS journal_entries_one_reversal_uidx
@@ -2368,8 +2338,6 @@ GRANT EXECUTE ON FUNCTION public.post_journal_entry(uuid,uuid) TO authenticated,
 REVOKE ALL ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO authenticated,service_role;
 
-
-
 -- ===== Expense posting workflow =====
 
 CREATE OR REPLACE FUNCTION public.post_expense(
@@ -2476,9 +2444,7 @@ $function$;
 REVOKE ALL ON FUNCTION public.post_expense(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_expense(uuid,uuid) TO authenticated,service_role;
 
-
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108071500_zero_erp_sequence_rpc_hardening.sql
@@ -2494,7 +2460,6 @@ REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon,
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO service_role;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108072000_zero_erp_tenant_scope_and_ownership.sql
@@ -2666,7 +2631,6 @@ REVOKE ALL ON FUNCTION private.enforce_organization_scope_immutable() FROM PUBLI
 REVOKE ALL ON FUNCTION private.enforce_organization_owner_immutable() FROM PUBLIC, anon, authenticated;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108073000_zero_erp_purchase_sales_posting.sql
@@ -3228,7 +3192,6 @@ GRANT EXECUTE ON FUNCTION public.post_sales(uuid,uuid) TO authenticated,service_
 
 COMMIT;
 
-
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108075000_zero_erp_source_document_reversal_guard.sql
 -- ============================================================================
@@ -3323,7 +3286,6 @@ REVOKE ALL ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) FROM PU
 GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO authenticated,service_role;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108080000_zero_erp_precision_and_discount_allocation.sql
@@ -4157,7 +4119,6 @@ GRANT EXECUTE ON FUNCTION public.post_sales_return(uuid,uuid) TO authenticated,s
 
 COMMIT;
 
-
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108083000_zero_erp_master_data_immutability.sql
 -- ============================================================================
@@ -4242,7 +4203,6 @@ REVOKE ALL ON FUNCTION private.enforce_product_identity_immutable() FROM PUBLIC,
 REVOKE ALL ON FUNCTION private.enforce_used_account_definition_immutable() FROM PUBLIC,anon,authenticated;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108084000_zero_erp_inventory_adjustments.sql
@@ -4487,7 +4447,6 @@ GRANT EXECUTE ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,
 
 COMMIT;
 
-
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108090000_zero_erp_payment_posting.sql
 -- ============================================================================
@@ -4679,7 +4638,6 @@ REVOKE ALL ON FUNCTION public.post_payment(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108091000_zero_erp_payment_constraints.sql
@@ -5710,14 +5668,12 @@ CREATE POLICY private_expense_templates_postgres_access
 ON private.default_expense_category_templates
 FOR ALL TO postgres USING (true) WITH CHECK (true);
 
-
 REVOKE EXECUTE ON FUNCTION public.reverse_purchase_return(uuid,uuid,date,text) FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.reverse_purchase_return(uuid,uuid,date,text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) TO authenticated;
 
 COMMIT;
-
 
 -- ============================================================================
 -- SOURCE MIGRATION: 20261108098100_zero_erp_secure_rpc_facade.sql
