@@ -169,9 +169,13 @@ BEGIN
     RAISE EXCEPTION 'Unsupported document table for control account validation';
   END IF;
 
-  v_contact_id:=NEW.contact_id;
-  IF TG_TABLE_NAME IN ('sales','sales_returns') THEN v_contact_id:=NEW.customer_id; END IF;
-  IF TG_TABLE_NAME IN ('purchase','purchase_returns') THEN v_contact_id:=NEW.supplier_id; END IF;
+  IF TG_TABLE_NAME IN ('sales','sales_returns') THEN
+    v_contact_id:=NEW.customer_id;
+  ELSIF TG_TABLE_NAME IN ('purchase','purchase_returns') THEN
+    v_contact_id:=NEW.supplier_id;
+  ELSE
+    v_contact_id:=NEW.contact_id;
+  END IF;
 
   SELECT a.account_type,a.requires_contact INTO v_account_type,v_requires_contact
     FROM public.accounts a
