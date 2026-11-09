@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { saveOpeningBalanceDraft } from "./actions";
 
-type Account = { id: string; code: string; account_name: string };
+type Account = { id: string; code: string; account_name: string; requires_contact: boolean };
 type Contact = { id: string; code: string; name: string };
 type Product = { id: string; code: string; name: string };
 type InitialLine = { account_id: string; debit: number | string; credit: number | string; contact_id: string | null; description: string | null };
@@ -72,10 +72,11 @@ export function OpeningBalanceEditor({
     return sum + (account?.code === "1140" ? Number(line.debit) : 0);
   }, 0);
   const balanced = selectedLines.length >= 2 && debitTotal > 0 && round4(debitTotal) === round4(creditTotal);
+  const uniqueStockProducts = new Set(selectedStock.map((line) => line.product_id)).size === selectedStock.length;
   const inventoryMatches = selectedStock.length
     ? round4(inventoryDebit) === round4(inventoryValue)
     : confirmZero && round4(inventoryDebit) === 0;
-  const canComplete = balanced && inventoryMatches;
+  const canComplete = balanced && inventoryMatches && uniqueStockProducts;
 
   return (
     <form action={saveOpeningBalanceDraft} className="opening-form">
@@ -103,7 +104,7 @@ export function OpeningBalanceEditor({
           <tbody>
             {lines.map((line) => {
               const account = accounts.find((item) => item.id === line.account_id);
-              const needsContact = account?.code === "1130" || account?.code === "2110";
+              const needsContact = Boolean(account?.requires_contact || account?.code === "1130" || account?.code === "2110");
               return (
                 <tr key={line.key}>
                   <td><select value={line.account_id} onChange={(event) => updateLine(line.key, { account_id: event.target.value, contact_id: "", ...(accounts.find((item) => item.id === event.target.value)?.code === "1140" ? { credit: "" } : {}) })}>
@@ -168,7 +169,8 @@ export function OpeningBalanceEditor({
         <button type="submit" name="intent" value="save" className="secondary-button">Save opening journal</button>
         <button type="submit" name="intent" value="complete" className="primary-button" disabled={!canComplete}>Complete organization setup</button>
       </div>
-      {!canComplete && <p className="setup-hint">To activate the organization, the opening journal must balance and opening stock must reconcile (or zero inventory must be confirmed).</p>}
+      {!uniqueStockProducts && <p className="setup-hint">Each product can appear only once in opening stock. Combine duplicate quantities into one line.</p>}
+      {!canComplete && uniqueStockProducts && <p className="setup-hint">To activate the organization, the opening journal must balance and opening stock must reconcile (or zero inventory must be confirmed).</p>}
     </form>
   );
 }
