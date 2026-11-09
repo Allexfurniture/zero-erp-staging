@@ -9,7 +9,7 @@ export async function signIn(formData: FormData) {
     email: String(formData.get("email") ?? "").trim(),
     password: String(formData.get("password") ?? ""),
   });
-  if (error) redirect("/login?error=credentials");
+  if (error) redirect("/login");
   redirect("/");
 }
 
@@ -19,8 +19,8 @@ export async function signUp(formData: FormData) {
     email: String(formData.get("email") ?? "").trim(),
     password: String(formData.get("password") ?? ""),
   });
-  if (error) redirect("/signup?error=signup");
-  redirect("/login?registered=1");
+  if (error) redirect("/signup");
+  redirect("/login");
 }
 
 export async function signOut() {
@@ -42,6 +42,6 @@ export async function createOrganization(formData: FormData) {
     p_tin: String(formData.get("tin") ?? "").trim() || null,
     p_bin: String(formData.get("bin") ?? "").trim() || null,
   });
-  if (error) redirect("/?error=organization");
+  if (error) redirect("/");
   redirect("/setup");
 }
