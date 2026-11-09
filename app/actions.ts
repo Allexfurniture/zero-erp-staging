@@ -38,9 +38,10 @@ export async function requestPasswordReset(form: FormData) {
   if (!emailPattern.test(email)) redirect("/forgot-password?error=invalid");
 
   const supabase = await createClient();
-  await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/auth/callback?next=/reset-password`,
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback?next=/reset-password`,
   });
+  if (error) redirect("/forgot-password?error=send");
   // Keep the response identical whether or not the address is registered.
   redirect("/forgot-password?sent=1");
 }
