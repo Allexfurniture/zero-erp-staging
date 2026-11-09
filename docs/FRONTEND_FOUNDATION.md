@@ -11,12 +11,14 @@
 - Email/password sign-up and sign-in through Supabase Auth.
 - Organization creation through the existing `create_organization` RPC.
 - Organization membership resolution through `organization_users`.
-- Configuring organizations are routed to a setup status screen.
+- Configuring organizations are routed to a creator-only setup workspace.
+- Setup supports contacts, units, products, an editable opening journal draft, opening stock valuation, and explicit zero-inventory confirmation.
+- Opening journal drafts are saved atomically through a creator-authorized RPC; activation uses the existing balanced-journal and inventory-reconciliation RPC.
 - Active organization overview reads tenant-scoped counts, inventory valuation, and recent sales, purchases, and expenses from the live database.
 - No service-role key is used by the application.
 
 ## Database workflow boundary
-The canonical database requires a draft opening-balance journal with balanced account lines and opening stock reconciliation before `complete_organization_setup` can activate an organization. The current setup screen explains this gate and intentionally does not bypass it. The full opening-balance editor must be implemented against the exact RLS and trigger behavior before organizations can be activated from the UI.
+The canonical database requires a draft opening-balance journal with at least two balanced lines, active contacts for receivable/payable control-account balances, and opening stock value reconciled to Inventory Asset account 1140 before `complete_organization_setup` can activate an organization. The setup UI writes the draft through `save_opening_balance_draft` and delegates final posting and stock-ledger creation to the existing completion RPC.
 
 ## Environment
 Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the deployment environment. These are public project connection values; never add a service-role or secret key to a browser-exposed variable.
@@ -27,7 +29,7 @@ Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the
 3. Build sales, purchases, payments, expenses, journals, returns, and inventory workflows using the existing posting and reversal RPCs.
 4. Add reports after validating accounting query definitions and tenant scoping.
 
-No database schema, migration, RLS policy, trigger, RPC, or production resource was changed by this frontend work.
+Staging-only additive migrations revoke unnecessary authenticated TRUNCATE/TRIGGER/REFERENCES privileges and add the atomic opening-balance draft RPC. Existing tables, accounting triggers, RLS policies and posting rules are preserved. The read-only regression gate is stored at `supabase/tests/zero_erp_complete_test.sql`; end-to-end posting tests still require isolated Auth fixtures.
 
 ## Authentication
 - Password sign-in and registration use Supabase Auth from server actions.
