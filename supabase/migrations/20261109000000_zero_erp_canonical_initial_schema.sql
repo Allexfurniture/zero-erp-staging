@@ -2234,20 +2234,16 @@ $function$;
 REVOKE ALL ON FUNCTION public.post_expense(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_expense(uuid,uuid) TO authenticated,service_role;
 
-COMMIT;
 
 -- 10. SEQUENCE RPC PERMISSIONS
 
-BEGIN;
 
 REVOKE ALL ON FUNCTION public.next_document_number(uuid,text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.next_document_number(uuid,text) TO service_role;
 
-COMMIT;
 
 -- 11. ORGANIZATION OWNERSHIP AND TENANT SCOPE
 
-BEGIN;
 
 ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS owner_user_id uuid;
 
@@ -2411,11 +2407,9 @@ FOR EACH ROW EXECUTE FUNCTION private.enforce_organization_owner_immutable();
 REVOKE ALL ON FUNCTION private.enforce_organization_scope_immutable() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION private.enforce_organization_owner_immutable() FROM PUBLIC, anon, authenticated;
 
-COMMIT;
 
 -- 12. PURCHASE AND SALES POSTING
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION private.purchase_net_lines(p_organization_id uuid,p_purchase_id uuid)
 RETURNS TABLE(
@@ -2968,11 +2962,9 @@ GRANT EXECUTE ON FUNCTION public.post_purchase(uuid,uuid) TO authenticated,servi
 REVOKE ALL ON FUNCTION public.post_sales(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_sales(uuid,uuid) TO authenticated,service_role;
 
-COMMIT;
 
 -- 13. SOURCE-DOCUMENT REVERSAL GUARD
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION public.reverse_journal_entry(
   p_organization_id uuid,
@@ -3060,11 +3052,9 @@ $function$;
 REVOKE ALL ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.reverse_journal_entry(uuid,uuid,date,text) TO authenticated,service_role;
 
-COMMIT;
 
 -- 14. DECIMAL PRECISION AND DISCOUNT ALLOCATION
 
-BEGIN;
 CREATE OR REPLACE FUNCTION public.complete_organization_setup(
   p_organization_id uuid,
   p_inventory_items jsonb DEFAULT '[]'::jsonb,
@@ -3295,11 +3285,9 @@ $function$;
 REVOKE ALL ON FUNCTION private.purchase_net_lines(uuid,uuid) FROM PUBLIC,anon,authenticated;
 REVOKE ALL ON FUNCTION private.sales_net_lines(uuid,uuid) FROM PUBLIC,anon,authenticated;
 
-COMMIT;
 
 -- 15. PURCHASE AND SALES RETURN POSTING
 
-BEGIN;
 
 CREATE UNIQUE INDEX IF NOT EXISTS purchase_return_items_one_source_line_uidx
   ON public.purchase_return_items(organization_id,purchase_return_id,purchase_item_id);
@@ -3883,11 +3871,9 @@ GRANT EXECUTE ON FUNCTION public.post_purchase_return(uuid,uuid) TO authenticate
 REVOKE ALL ON FUNCTION public.post_sales_return(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_sales_return(uuid,uuid) TO authenticated,service_role;
 
-COMMIT;
 
 -- 16. MASTER-DATA IMMUTABILITY
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION private.enforce_product_identity_immutable()
 RETURNS trigger
@@ -3965,11 +3951,9 @@ FOR EACH ROW EXECUTE FUNCTION private.enforce_used_account_definition_immutable(
 REVOKE ALL ON FUNCTION private.enforce_product_identity_immutable() FROM PUBLIC,anon,authenticated;
 REVOKE ALL ON FUNCTION private.enforce_used_account_definition_immutable() FROM PUBLIC,anon,authenticated;
 
-COMMIT;
 
 -- 17. INVENTORY ADJUSTMENTS
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION public.post_inventory_adjustment(
   p_organization_id uuid,
@@ -4202,11 +4186,9 @@ $function$;
 REVOKE ALL ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) TO authenticated,service_role;
 
-COMMIT;
 
 -- 18. PAYMENT POSTING AND ALLOCATION
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION public.post_payment(p_organization_id uuid,p_payment_id uuid)
 RETURNS uuid
@@ -4388,22 +4370,18 @@ $function$;
 REVOKE ALL ON FUNCTION public.post_payment(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
-COMMIT;
 
 -- 18.1. Payment vocabulary and allocation constraints
 
-BEGIN;
 ALTER TABLE public.payments
   ADD CONSTRAINT payments_payment_type_check CHECK (payment_type IN ('receipt','payment'));
 ALTER TABLE public.payment_allocations
   ADD CONSTRAINT payment_allocations_document_type_check CHECK (document_type IN ('sales','purchase'));
 CREATE UNIQUE INDEX payment_allocations_one_invoice_per_payment_uidx
   ON public.payment_allocations(organization_id,payment_id,document_type,document_id);
-COMMIT;
 
 -- 19. OPENING-BALANCE SUBLEDGER
 
-BEGIN;
 
 CREATE TABLE public.opening_balance_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -4668,7 +4646,6 @@ $function$;
 REVOKE ALL ON FUNCTION public.post_payment(uuid,uuid) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.post_payment(uuid,uuid) TO authenticated;
 
-COMMIT;
 
 -- 19.1. Opening-balance lookup indexes
 
@@ -4677,7 +4654,6 @@ CREATE INDEX IF NOT EXISTS opening_balance_items_account_idx
 
 -- 20. CONTROL-ACCOUNT AND CONTACT RULES
 
-BEGIN;
 
 ALTER TABLE public.accounts
   ADD COLUMN IF NOT EXISTS requires_contact boolean NOT NULL DEFAULT false;
@@ -4956,7 +4932,6 @@ BEGIN
 END;
 $function$;
 
-COMMIT;
 
 -- 21. ACCOUNT AND DOCUMENT IMMUTABILITY
 
@@ -5017,7 +4992,6 @@ FOR EACH ROW EXECUTE FUNCTION private.enforce_used_account_definition_immutable(
 
 -- 22. PAYMENT AND EXPENSE REVERSALS
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION private.reverse_source_journal(
   p_organization_id uuid,
@@ -5189,11 +5163,9 @@ $function$;
 REVOKE ALL ON FUNCTION public.reverse_expense(uuid,uuid,date,text) FROM PUBLIC,anon;
 GRANT EXECUTE ON FUNCTION public.reverse_expense(uuid,uuid,date,text) TO authenticated;
 
-COMMIT;
 
 -- 23. PURCHASE AND SALES RETURN REVERSALS
 
-BEGIN;
 
 CREATE OR REPLACE FUNCTION public.reverse_purchase_return(
   p_organization_id uuid, p_return_id uuid, p_reversal_date date, p_reason text
@@ -5400,11 +5372,9 @@ REVOKE EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) FROM
 GRANT EXECUTE ON FUNCTION public.reverse_purchase_return(uuid,uuid,date,text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.reverse_sales_return(uuid,uuid,date,text) TO authenticated;
 
-COMMIT;
 
 -- 24. PRIVATE WORKFLOW IMPLEMENTATIONS AND PUBLIC RPC FACADES
 
-BEGIN;
 GRANT USAGE ON SCHEMA private TO authenticated;
 REVOKE USAGE ON SCHEMA private FROM anon;
 
@@ -5472,10 +5442,8 @@ BEGIN
  END IF;
 END;
 $verify_facade$;
-COMMIT;
 
 -- 25. RETURN-SOURCE INTEGRITY
-BEGIN;
 
 CREATE OR REPLACE FUNCTION private.enforce_purchase_return_source_integrity()
 RETURNS trigger
