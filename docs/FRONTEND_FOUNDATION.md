@@ -19,7 +19,7 @@
 The canonical database requires a draft opening-balance journal with balanced account lines and opening stock reconciliation before `complete_organization_setup` can activate an organization. The current setup screen explains this gate and intentionally does not bypass it. The full opening-balance editor must be implemented against the exact RLS and trigger behavior before organizations can be activated from the UI.
 
 ## Environment
-Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in the deployment environment. These are public project connection values; never add a service-role or secret key to a browser-exposed variable.
+Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the deployment environment. These are public project connection values; never add a service-role or secret key to a browser-exposed variable.
 
 ## Next implementation sequence
 1. Implement the opening-balance and opening-stock editor using the existing schema and `complete_organization_setup` RPC.
