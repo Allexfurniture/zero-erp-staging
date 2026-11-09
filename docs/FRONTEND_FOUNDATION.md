@@ -1,28 +1,30 @@
 # ZERO ERP frontend foundation
 
-## Product decisions
-- Enterprise ERP visual direction
-- Light theme only
-- English interface
+## Product constraints
+- Minimal, responsive, data-dense light UI.
+- Server-rendered pages and native forms; avoid unnecessary client state and UI dependencies.
+- No placeholder KPIs, sample transactions, fabricated identities, or fake system status.
 
-## Application foundation
-The App Router dashboard provides the initial workspace shell: responsive primary navigation, workspace context, global search, notification affordance, reporting-period selector, KPI preview cards, revenue visualization, quick actions, and recent transaction preview.
+## Implemented
+- Supabase SSR server client with cookie-backed sessions.
+- Next.js 16 proxy refreshes auth claims and rotates session cookies.
+- Email/password sign-up and sign-in through Supabase Auth.
+- Organization creation through the existing `create_organization` RPC.
+- Organization membership resolution through `organization_users`.
+- Configuring organizations are routed to a setup status screen.
+- Active organization overview reads tenant-scoped counts, inventory valuation, and recent sales, purchases, and expenses from the live database.
+- No service-role key is used by the application.
 
-## Data boundary
-The dashboard currently uses explicitly labelled sample preview data. It does not read or write business records. This avoids presenting invented values as live accounting data while the tenant-aware Supabase integration is being implemented.
+## Database workflow boundary
+The canonical database requires a draft opening-balance journal with balanced account lines and opening stock reconciliation before `complete_organization_setup` can activate an organization. The current setup screen explains this gate and intentionally does not bypass it. The full opening-balance editor must be implemented against the exact RLS and trigger behavior before organizations can be activated from the UI.
 
-## Supabase configuration
-Copy `.env.example` to `.env.local` and provide the project's public URL and anon/publishable key:
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-
-Never expose a service-role key in browser code or a `NEXT_PUBLIC_*` variable.
+## Environment
+Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in the deployment environment. These are public project connection values; never add a service-role or secret key to a browser-exposed variable.
 
 ## Next implementation sequence
-1. Generate and commit database types from the isolated staging project.
-2. Implement Supabase SSR clients and authenticated session handling.
-3. Resolve the active organization from the authenticated user's memberships.
-4. Replace preview dashboard values with tenant-scoped, RLS-protected reads.
-5. Build each module using the existing database RPCs for accounting workflows and posting operations.
+1. Implement the opening-balance and opening-stock editor using the existing schema and `complete_organization_setup` RPC.
+2. Build contacts and product/UOM master-data screens.
+3. Build sales, purchases, payments, expenses, journals, returns, and inventory workflows using the existing posting and reversal RPCs.
+4. Add reports after validating accounting query definitions and tenant scoping.
 
-No database migrations, policies, triggers, functions, or production resources are modified by this frontend foundation.
+No database schema, migration, RLS policy, trigger, RPC, or production resource was changed by this frontend work.
