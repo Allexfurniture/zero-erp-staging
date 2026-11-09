@@ -46,7 +46,7 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
   </section></main>;
 
   const [{ data: accounts }, { data: contacts }, { data: units }, { data: products }, { data: journal }, { count: categoryCount }] = await Promise.all([
-    supabase.from("accounts").select("id,code,account_name,is_postable").eq("organization_id", organization.id).eq("status", "active").order("code"),
+    supabase.from("accounts").select("id,code,account_name,is_postable,requires_contact").eq("organization_id", organization.id).eq("status", "active").order("code"),
     supabase.from("contacts").select("id,code,name").eq("organization_id", organization.id).eq("status", "active").order("name"),
     supabase.from("units_of_measure").select("id,name").eq("organization_id", organization.id).eq("status", "active").order("name"),
     supabase.from("products").select("id,code,name").eq("organization_id", organization.id).eq("status", true).order("name"),
