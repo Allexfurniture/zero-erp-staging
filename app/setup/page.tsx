@@ -1,10 +1,11 @@
+import { redirect } from "next/navigation";
 import { signOut } from "../actions";
 import { createClient } from "../../lib/supabase/server";
 
 export default async function SetupPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  if (!user) redirect("/login");
   const { data: memberships } = await supabase.from("organization_users").select("organization_id").eq("user_id", user.id).eq("status", "active");
   const ids = (memberships ?? []).map((row) => row.organization_id);
   const { data: organizations } = ids.length ? await supabase.from("organizations").select("id,name,status").in("id", ids) : { data: [] };
