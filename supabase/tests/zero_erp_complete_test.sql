@@ -73,7 +73,9 @@ BEGIN
      OR to_regprocedure('private.create_organization(text,text,text,text,text,text)') IS NULL
      OR to_regprocedure('public.complete_organization_setup(uuid,jsonb,boolean)') IS NULL
      OR to_regprocedure('private.complete_organization_setup(uuid,jsonb,boolean)') IS NULL
-     OR to_regprocedure('public.post_journal_entry(uuid,uuid)') IS NULL THEN
+     OR to_regprocedure('public.post_journal_entry(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.save_opening_balance_draft(uuid,date,text,jsonb)') IS NULL
+     OR to_regprocedure('private.save_opening_balance_draft(uuid,date,text,jsonb)') IS NULL THEN
     RAISE EXCEPTION 'Workflow regression: a required organization/accounting RPC is missing';
   END IF;
 
@@ -83,6 +85,14 @@ BEGIN
     WHERE p.oid=to_regprocedure('private.complete_organization_setup(uuid,jsonb,boolean)')
   ) THEN
     RAISE EXCEPTION 'Security regression: setup implementation must remain SECURITY DEFINER';
+  END IF;
+
+  IF NOT (
+    SELECT p.prosecdef FROM pg_proc p
+    WHERE p.oid=to_regprocedure('private.save_opening_balance_draft(uuid,date,text,jsonb)')
+  ) OR NOT has_function_privilege('authenticated','public.save_opening_balance_draft(uuid,date,text,jsonb)','EXECUTE')
+    OR has_function_privilege('anon','public.save_opening_balance_draft(uuid,date,text,jsonb)','EXECUTE') THEN
+    RAISE EXCEPTION 'Security regression: opening draft RPC permissions are incorrect';
   END IF;
 
   -- One opening journal per organization and automatic AR/AP subledger materialization.
