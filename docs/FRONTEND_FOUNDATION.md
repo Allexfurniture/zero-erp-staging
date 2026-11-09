@@ -28,3 +28,17 @@ Set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the
 4. Add reports after validating accounting query definitions and tenant scoping.
 
 No database schema, migration, RLS policy, trigger, RPC, or production resource was changed by this frontend work.
+
+## Authentication
+- Password sign-in and registration use Supabase Auth from server actions.
+- Registration uses email confirmation; the confirmation code is exchanged for a cookie-backed session at `/auth/callback`.
+- Password recovery uses `resetPasswordForEmail`, callback exchange, and authenticated `updateUser({ password })`.
+- Callback destinations are restricted to same-origin relative paths.
+- Auth pages redirect an already-authenticated user to the workspace.
+- Setup and workspace routes verify the current user server-side.
+- Sign-in failures use a generic response; password-reset responses do not disclose whether an email is registered.
+
+## Supabase Auth dashboard requirement
+For the staging project, ensure Supabase Authentication > URL Configuration includes this exact Redirect URL:
+`https://zero-erp-staging-git-fea-83f77a-allexfurniturebd-4719s-projects.vercel.app/auth/callback`
+The Site URL should be the stable staging URL above. The Vercel Preview environment variable `NEXT_PUBLIC_SITE_URL` is scoped only to branch `feat/enterprise-frontend-foundation`; it does not change Production environment configuration.
