@@ -61,11 +61,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DB_URL="$(supabase status -o env | sed -n 's/^DB_URL=//p' | tail -n 1)"
-          if [[ -z "$DB_URL" ]]; then
-            echo "Supabase CLI did not return DB_URL" >&2
-            exit 1
-          fi
+          # Match the local Supabase defaults in supabase/config.toml (db.port=54322).
+          # Never resolve or connect to a hosted project from this workflow.
+          DB_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
           psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/zero_erp_complete_test.sql
 
       - name: Stop local Supabase stack
