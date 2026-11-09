@@ -3,7 +3,7 @@
 :root{color-scheme:light;--ink:#172033;--muted:#788397;--line:#e9edf3;--surface:#fff;--canvas:#f7f8fb;--navy:#17243b;--accent:#3459d5;--font-sans:Arial,Helvetica,sans-serif}
 *{box-sizing:border-box}
 html,body{min-height:100%;margin:0}
-body{background:var(--canvas);color:var(--ink);font-family:Arial,Helvetica,sans-serif;font-size:13px;-webkit-font-smoothing:antialiased}
+body{background:var(--canvas);color:var(--ink);font-family:var(--font-geist-sans),Arial,Helvetica,sans-serif;font-size:13px;-webkit-font-smoothing:antialiased}
 button,input,select{font:inherit}
 button{cursor:pointer}
 .erp-shell{min-height:100vh}
