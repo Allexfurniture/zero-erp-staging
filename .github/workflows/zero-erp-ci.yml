@@ -1,0 +1,73 @@
+name: ZERO ERP CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "chore/**", "fix/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zero-erp-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app-quality:
+    name: App lint, typecheck, and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  database-regression:
+    name: Local Supabase migration and regression suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase stack
+        run: supabase start
+
+      - name: Apply canonical migrations locally
+        run: supabase db reset --local
+
+      - name: Run complete ZERO ERP regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB_URL="$(supabase status -o env | sed -n 's/^DB_URL=//p' | tail -n 1)"
+          if [[ -z "$DB_URL" ]]; then
+            echo "Supabase CLI did not return DB_URL" >&2
+            exit 1
+          fi
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/zero_erp_complete_test.sql
+
+      - name: Stop local Supabase stack
+        if: always()
+        run: supabase stop --no-backup
