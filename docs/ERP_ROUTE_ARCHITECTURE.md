@@ -212,7 +212,7 @@ Do not add these as current modules/pages until schema and business workflows ar
 - All 24 public tables have RLS enabled and policies.
 - Anonymous role has no direct public-table privileges.
 - Authenticated role lacks TRUNCATE, TRIGGER and REFERENCES privileges.
-- Inventory ledger/balance and opening-balance subledger have SELECT-only RLS policies and workflow triggers block direct writes.
+- Inventory ledger/balance tables have SELECT-only RLS policies and workflow triggers block direct writes. The opening-balance subledger has a SELECT-only RLS policy and no authenticated write privilege.
 - Organization membership is checked through active `organization_users` rows; organization creator is checked through `organizations.owner_user_id`.
 - Organization status transitions are restricted to the setup completion workflow; organization ownership and tenant scope are immutable.
 - Account code/type/normal-balance/control-account definition cannot be changed after ledger or source-document use.
